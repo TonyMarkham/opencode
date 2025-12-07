@@ -3,10 +3,8 @@ use std::time::Duration;
 
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
+use crate::error::ApiError;
 
-#[derive(Debug, Error)]
-pub enum ApiError {
     #[error("invalid base url: {0}")]
     Url(String),
     #[error("http error: {0}")]

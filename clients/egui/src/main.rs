@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
+mod error;
+pub mod discovery;
+pub mod client;
 
 use eframe::egui;
 

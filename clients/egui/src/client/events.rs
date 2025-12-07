@@ -1,11 +1,7 @@
 use serde::Deserialize;
-use thiserror::Error;
-
-#[derive(Debug, Error)]
-pub enum EventsError {
+use crate::error::EventsError;
     #[error("http error: {0}")]
     Http(String),
-}
 
 #[derive(Debug, Deserialize)]
 pub struct GlobalEvent<T = serde_json::Value> {

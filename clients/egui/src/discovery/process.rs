@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use sysinfo::{ProcessExt, System, SystemExt};
-use thiserror::Error;
 use netstat2::{get_sockets_info, AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo, TcpState};
+use crate::error::DiscoveryError;
 
 #[derive(Debug, Clone)]
 pub struct ServerInfo {
@@ -13,13 +13,10 @@ pub struct ServerInfo {
     pub command: String,
 }
 
-#[derive(Debug, Error)]
-pub enum DiscoveryError {
     #[error("failed to query system processes: {0}")]
     SystemQuery(String),
     #[error("failed to query network sockets: {0}")]
     NetworkQuery(String),
-}
 
 fn find_listening_port(pid: u32) -> Result<Option<u16>, DiscoveryError> {
     let sockets = get_sockets_info(

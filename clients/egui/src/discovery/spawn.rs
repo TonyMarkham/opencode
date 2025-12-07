@@ -1,12 +1,9 @@
 use std::{process::Stdio, time::Duration};
 
 use regex::Regex;
-use thiserror::Error;
 
 use crate::discovery::process::{check_health, ServerInfo};
-
-#[derive(Debug, Error)]
-pub enum SpawnError {
+use crate::error::SpawnError;
     #[error("failed to spawn opencode: {0}")]
     Spawn(String),
     #[error("failed to parse server url from output")] 
