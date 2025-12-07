@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use sysinfo::{ProcessExt, System, SystemExt};
 use netstat2::{get_sockets_info, AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo, TcpState};
-use crate::error::DiscoveryError;
+use crate::error::discovery::DiscoveryError;
 
 #[derive(Debug, Clone)]
 pub struct ServerInfo {

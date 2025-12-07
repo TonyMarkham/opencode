@@ -3,7 +3,7 @@ use std::{process::Stdio, time::Duration};
 use regex::Regex;
 
 use crate::discovery::process::{check_health, ServerInfo};
-use crate::error::SpawnError;
+use crate::error::spawn::SpawnError;
     #[error("failed to spawn opencode: {0}")]
     Spawn(String),
     #[error("failed to parse server url from output")] 

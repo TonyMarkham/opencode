@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use crate::error::ApiError;
+use crate::error::api::ApiError;
 
     #[error("invalid base url: {0}")]
     Url(String),

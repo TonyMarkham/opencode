@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use crate::error::EventsError;
+use crate::error::events::EventsError;
     #[error("http error: {0}")]
     Http(String),
 

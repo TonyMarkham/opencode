@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-mod error;
+pub mod error; // contains api, events, discovery, spawn submodules
 pub mod discovery;
 pub mod client;
 
