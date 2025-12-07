@@ -1,0 +1,38 @@
+[package]
+name = "opencode-egui"
+version = "0.0.1"
+edition = "2024"
+license = "MIT"
+
+[dependencies]
+# GUI
+eframe = { version = "0.29", default-features = true, features = ["wgpu"] }
+egui = "0.29"
+egui_commonmark = "0.19"
+
+# Async & HTTP
+tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "signal"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+
+# Cross-platform process and port discovery
+sysinfo = "0.30"
+netstat2 = "0.9"
+
+# Serialization & config
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+directories = "6.0"
+
+# Errors
+thiserror = "2.0"
+
+# Utilities
+futures = "0.3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[workspace]
+resolver = "2"

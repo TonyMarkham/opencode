@@ -1,0 +1,5 @@
+target/
+**/*.rs.bk
+
+# Local config cache
+.opencode-egui/
