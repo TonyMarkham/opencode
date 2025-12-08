@@ -1,4 +1,4 @@
-# OpenCode EGUI Thin Client — Architecture & Implementation Plan
+++# OpenCode EGUI Thin Client — Architecture & Implementation Plan
 
 Status: Draft (2025-12-07)
 Owner: Tony (fork)
@@ -114,6 +114,7 @@ impl AppState {
 - Streaming: Subscribe to /global/event and filter by sessionID.
 - Chat density: compact by default; progressive disclosure for tool calls to reduce noise.
 - Server Preferences pane: show detected PID/port, a reconnect button, base URL override, and logs for discovery attempts.
+- Header shows effective working directory (override or session directory) to clarify filesystem context.
 
 ## Dependencies (initial)
 - eframe, egui, egui_commonmark
@@ -141,36 +142,67 @@ impl AppState {
 ## Config Strategy
 - Local file (e.g., $XDG_CONFIG_HOME/opencode-egui/config.json):
   - server: { last_base_url, auto_start: true, directory_override: null }
-  - ui: { fonts, keybinds, chat_density }
+  - ui: { font_preset, base_font_points, message_spacing }
 - Server-side config remains the source of truth for agent/model/workspace settings (queried via /config).
 
 ## Milestones
-- M0 — Bootstrap
+- M0 — Bootstrap ✓ COMPLETE
   - Scaffold crate in clients/egui (Cargo.toml, main.rs)
   - Render blank EGUI window
-- M1 — Server Discovery
+- M1 — Server Discovery ✓ COMPLETE
   - Implement sysinfo + netstat2 detection
   - Implement spawn + readiness validation
-  - Persist last discovered base_url in local config
-- M2 — Events + Sessions
-  - SSE subscription with backoff and UI diagnostics
-  - Sessions list/create/delete; open session → new tab
-  - Stream assistant output to active tab
-- M3 — Server Preferences + Settings
-  - Dedicated pane for server controls + diagnostics
-  - Local UI preferences with live application
-- M4 — Polishing
-  - Chat markdown rendering, copy buttons, minimal tool-call summaries
-  - Error surfaces and reconnect flows
+  - Graceful shutdown of spawned server on exit/stop
+  - UI: top bar with server status, reconnect, and stop buttons
+- M2 — Events + Sessions ✓ COMPLETE
+  - SSE subscription using reqwest-eventsource + futures-util StreamExt
+  - REST client methods: create_session, delete_session, send_message
+  - UI: tabbed sessions with "+" button; async session creation
+  - Event routing by sessionID to correct tab with role-based message display
+  - Multiline message input (3 rows, bottom panel, scrollable)
+  - Send via Cmd+Enter keyboard shortcut or Send button
+  - Tab management: close (X button), rename (right-click context menu)
+  - Auto-creation of first tab when server connects
+  - Event parsing with role colors (blue=user, green=assistant) and tool call display
+  - Clipboard support (copy/paste/cut) built-in
+  - Fast startup: deferred tokio runtime and server discovery to first frame
+- M3 — Server Preferences + Settings ✓ COMPLETE
+  - Settings window with Server Preferences: base URL override, auto-start toggle, directory override, diagnostics, reconnect/start/stop
+  - UI Preferences: font size preset + adjustable base size; message spacing; live apply
+  - Header displays server info and effective directory
+  - Config persisted to $XDG_CONFIG_HOME/opencode-egui/config.json
+- M4 — Polishing ✓ COMPLETE
+  - Markdown rendering via egui_commonmark with proper caching
+  - Message bubbles with rounded corners and role-based colors (blue=user, gray=assistant)
+  - Copy buttons for all messages
+  - Collapsible tool call summaries with status color coding (green=success, red=error, gray=other)
+  - Fixed streaming: text content replaces (not appends) on each update
+  - Fixed message deduplication: track message IDs to prevent duplicate renders
+  - Fixed widget ID collisions: use message ID as salt for collapsing headers
+  - Switched to forked egui dependencies for compatibility (egui v0.33, egui_commonmark v0.22)
 
 ## Risks & Mitigations
 - Server API drift → keep the client small and resilient; feature-gate advanced UI until endpoints stabilize.
 - Discovery false positives → require validation via GET /doc; allow manual URL override.
 - SSE disconnects → retry with backoff; show non-blocking banner.
 
-## Next Steps (actionable)
-1) Initialize clients/egui crate and add dependencies.
-2) Implement discovery::process and discovery::spawn.
-3) Add client::api (GET /doc, sessions CRUD) and client::events (SSE).
-4) Build tabbed UI using chat-poc pattern; wire to sessions + streaming.
-5) Add Server Preferences pane and local config persistence.
+## Status (2025-12-07)
+All planned milestones (M0-M4) complete. The EGUI client is functional with:
+- Auto server discovery and spawning
+- Multi-session tabs with server-backed sessions
+- SSE streaming with markdown rendering
+- Tool call visualization
+- Settings UI with server + UI preferences
+
+## Next Milestone
+- **M5 — Speech-to-Text (STT)**: See [STT_PLAN.md](./STT_PLAN.md) for detailed architecture and implementation plan
+
+## Potential Future Work
+- Reconnect retry with exponential backoff
+- Toast notifications for connection events
+- Loading/streaming indicators
+- Enhanced error surfaces (non-blocking banners)
+- Code syntax highlighting in markdown blocks
+- Image rendering support
+- Keyboard shortcuts (Cmd+W to close tab, Cmd+T for new tab)
+- Text-to-speech (TTS) output

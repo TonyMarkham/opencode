@@ -1,9 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod app;
-pub mod error; // contains api, events, discovery, spawn submodules
-pub mod discovery;
+pub mod audio;
 pub mod client;
+mod config;
+pub mod discovery;
+pub mod error; // contains api, events, discovery, spawn submodules
 
 use eframe::egui;
 
@@ -18,6 +20,6 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "OpenCode EGUI",
         options,
-        Box::new(|cc| Ok(Box::new(app::OpenCodeApp::new(cc))))
+        Box::new(|cc| Ok(Box::new(app::OpenCodeApp::new(cc)))),
     )
 }

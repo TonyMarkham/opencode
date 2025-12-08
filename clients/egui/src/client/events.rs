@@ -1,20 +1,36 @@
-use serde::Deserialize;
 use crate::error::events::EventsError;
-    #[error("http error: {0}")]
-    Http(String),
+use futures_util::stream::StreamExt;
+use reqwest_eventsource::{Event, EventSource};
+use serde::Deserialize;
+use tokio::sync::mpsc;
 
-#[derive(Debug, Deserialize)]
-pub struct GlobalEvent<T = serde_json::Value> {
+#[derive(Debug, Deserialize, Clone)]
+pub struct GlobalEvent {
     pub directory: String,
-    #[serde(bound = "T: Deserialize<'de>")]
-    pub payload: T,
+    pub payload: serde_json::Value,
 }
 
-/// Placeholder; wire up with an SSE client crate (eventsource-stream or reqwest_eventsource)
-/// returning a Stream of GlobalEvent. Keeping signature minimal for now.
-pub struct EventStream; // TODO: Replace with actual Stream<Item = Result<GlobalEvent, EventsError>>
+/// Start an SSE subscription to /global/event and return a receiver of parsed GlobalEvent.
+pub async fn subscribe_global(base_url: &str) -> Result<mpsc::Receiver<GlobalEvent>, EventsError> {
+    let url = format!("{}/global/event", base_url.trim_end_matches('/'));
+    let mut es = EventSource::get(url);
+    let (tx, rx) = mpsc::channel(256);
 
-pub async fn subscribe_global(_base_url: &str) -> Result<EventStream, EventsError> {
-    // TODO: implement with SSE client
-    Err(EventsError::Http("not implemented".into()))
+    tokio::spawn(async move {
+        loop {
+            match es.next().await {
+                Some(Ok(Event::Open)) => {}
+                Some(Ok(Event::Message(message))) => {
+                    if let Ok(ev) = serde_json::from_str::<GlobalEvent>(&message.data) {
+                        let _ = tx.send(ev).await;
+                    }
+                }
+                Some(Err(_)) | None => {
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok(rx)
 }

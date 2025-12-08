@@ -1,0 +1,53 @@
+[tasks.setup-models]
+description = "Copy Whisper model to target directory (cross-platform)"
+script_runner = "@duckscript"
+script = '''
+model_dir = set "target/debug/models"
+model_file = set "ggml-base.en.bin"
+
+# Get home directory (works on Windows, macOS, Linux)
+home = get_env HOME
+if is_empty ${home}
+    home = get_env USERPROFILE
+end
+
+# Construct paths
+source_path = concat ${home} "/Downloads/" ${model_file}
+target_path = concat ${model_dir} "/" ${model_file}
+
+# Create target directory
+mkdir ${model_dir}
+
+# Check if source exists and copy
+exists = is_path_exists ${source_path}
+if ${exists}
+    echo "Copying Whisper model from ${source_path}..."
+    cp ${source_path} ${target_path}
+    echo "✓ Model ready at ${target_path}"
+else
+    echo "⚠️  Whisper model not found at ${source_path}"
+    echo ""
+    echo "Download it from:"
+    echo "  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
+    echo ""
+    echo "Save to Downloads folder as ggml-base.en.bin"
+end
+'''
+
+[tasks.build]
+description = "Build the project"
+command = "cargo"
+args = ["build"]
+
+[tasks.dev]
+description = "Build and setup models (does not run)"
+dependencies = ["build", "setup-models"]
+
+[tasks.run]
+description = "Build, setup models, and run"
+dependencies = ["dev"]
+command = "cargo"
+args = ["run"]
+
+[tasks.default]
+alias = "dev"
