@@ -6,6 +6,8 @@ pub mod client;
 mod config;
 pub mod discovery;
 pub mod error; // contains api, events, discovery, spawn submodules
+pub mod startup;
+pub mod types;
 
 use eframe::egui;
 

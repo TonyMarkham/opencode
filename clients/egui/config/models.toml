@@ -1,0 +1,66 @@
+# OpenCode EGUI - Model Configuration
+# 
+# Dynamic provider definitions - no hardcoded provider logic in source code
+# To add a new provider: add a [[providers]] entry + API key in .env
+
+# ============================================================================
+# PROVIDER CONFIGURATIONS
+# ============================================================================
+
+[[providers]]
+name = "openai"
+display_name = "OpenAI"
+api_key_env = "OPENAI_API_KEY"
+models_url = "https://api.openai.com/v1/models"
+auth_type = "bearer"
+response_format = { models_path = "data", model_id_field = "id", model_name_field = "id" }
+
+[[providers]]
+name = "anthropic"
+display_name = "Anthropic"
+api_key_env = "ANTHROPIC_API_KEY"
+models_url = "https://api.anthropic.com/v1/models"
+auth_type = "header"
+auth_header = "x-api-key"
+response_format = { models_path = "data", model_id_field = "id", model_name_field = "display_name" }
+extra_headers = { "anthropic-version" = "2023-06-01" }
+
+[[providers]]
+name = "google"
+display_name = "Google Gemini"
+api_key_env = "GOOGLE_API_KEY"
+models_url = "https://generativelanguage.googleapis.com/v1/models"
+auth_type = "query_param"
+auth_param = "key"
+response_format = { models_path = "models", model_id_field = "name", model_id_strip_prefix = "models/", model_name_field = "displayName" }
+
+[[providers]]
+name = "openrouter"
+display_name = "OpenRouter"
+api_key_env = "OPENROUTER_API_KEY"
+models_url = "https://openrouter.ai/api/v1/models"
+auth_type = "bearer"
+response_format = { models_path = "data", model_id_field = "id", model_name_field = "name" }
+
+# ============================================================================
+# CURATED MODELS
+# ============================================================================
+# User's favorite models - shown in tab dropdown
+
+[models]
+default_model = "openai/gpt-4"
+
+[[models.curated]]
+name = "GPT-4"
+provider = "openai"
+model_id = "gpt-4"
+
+[[models.curated]]
+name = "Claude 3.5 Sonnet"
+provider = "anthropic"
+model_id = "claude-3-5-sonnet-20241022"
+
+[[models.curated]]
+name = "Gemini 2.0 Flash"
+provider = "google"
+model_id = "gemini-2.0-flash-exp"

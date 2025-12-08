@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 use crate::discovery::process::{ServerInfo, check_health, discover, stop_pid};
 use crate::discovery::spawn::spawn_and_wait;
+use crate::startup::auth::{AuthSyncState, sync_api_keys_to_server};
 
 pub struct OpenCodeApp {
     // Multi-session tabs (server-backed sessions in later milestones)
@@ -25,6 +26,9 @@ pub struct OpenCodeApp {
     // API client
     client: Option<crate::client::api::OpencodeClient>,
     
+    // Auth sync state
+    auth_sync_state: AuthSyncState,
+    
     // Audio task
     audio_tx: Option<mpsc::Sender<AudioCmd>>,
     audio_enabled: bool,
@@ -37,9 +41,18 @@ pub struct OpenCodeApp {
 
     // Config and settings
     config: crate::config::AppConfig,
+    models_config: crate::config::models::ModelsConfig,
     show_settings: bool,
     base_url_input: String,
     directory_input: String,
+    
+    // Model discovery UI state
+    show_model_discovery: bool,
+    discovery_provider: Option<String>,
+    discovery_models: Vec<crate::client::providers::DiscoveredModel>,
+    discovery_error: Option<String>,
+    discovery_in_progress: bool,
+    discovery_search: String,
     
     // Permission handling
     pending_permissions: Vec<PermissionInfo>,
@@ -55,6 +68,7 @@ struct Tab {
     directory: Option<String>,
     messages: Vec<DisplayMessage>,
     input: String,
+    selected_model: Option<(String, String)>, // (provider, model_id)
 }
 
 #[derive(Clone)]
@@ -78,6 +92,11 @@ enum UiMsg {
     SessionCreated { tab_idx: usize, id: String, title: String, directory: String },
     GlobalEvent(serde_json::Value),
     PermissionRequest(PermissionInfo),
+    // Auth sync events
+    AuthSyncComplete(AuthSyncState),
+    // Model discovery events
+    ModelsDiscovered(Vec<crate::client::providers::DiscoveredModel>),
+    ModelDiscoveryError(String),
     // Audio events
     RecordingStarted,
     RecordingStopped,
@@ -126,6 +145,7 @@ impl OpenCodeApp {
         
         // Load config and apply UI preferences
         let config = crate::config::AppConfig::load();
+        let models_config = crate::config::models::ModelsConfig::load();
         config.ui.apply_to_context(&cc.egui_ctx);
         
         Self {
@@ -139,6 +159,7 @@ impl OpenCodeApp {
             ui_rx: None,
             ui_tx: None,
             client: None,
+            auth_sync_state: AuthSyncState::default(),
             audio_tx: None,
             audio_enabled: false,
             recording_state: RecordingState::Idle,
@@ -146,9 +167,16 @@ impl OpenCodeApp {
             rename_buffer: String::new(),
             rename_text_selected: false,
             config: config.clone(),
+            models_config: models_config,
             show_settings: false,
             base_url_input: config.server.last_base_url.unwrap_or_default(),
             directory_input: config.server.directory_override.clone().unwrap_or_default(),
+            show_model_discovery: false,
+            discovery_provider: None,
+            discovery_models: Vec::new(),
+            discovery_error: None,
+            discovery_in_progress: false,
+            discovery_search: String::new(),
             pending_permissions: Vec::new(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
         }
@@ -250,9 +278,21 @@ UiMsg::ServerConnected(info) => {
                         self.base_url_input = base;
                         self.config.save();
                         
-                        self.server = Some(info);
+                        self.server = Some(info.clone());
                         self.server_error = None;
                         self.server_in_flight = false;
+                        
+                        // Start API key sync after server connection
+                        if let Some(rt) = &self.runtime {
+                            let tx3 = self.ui_tx.as_ref().unwrap().clone();
+                            let egui_ctx2 = ctx.clone();
+                            let server_url = info.base_url.clone();
+                            rt.spawn(async move {
+                                let state = sync_api_keys_to_server(&server_url).await;
+                                let _ = tx3.send(UiMsg::AuthSyncComplete(state));
+                                egui_ctx2.request_repaint();
+                            });
+                        }
                     }
                     UiMsg::ServerError(err) => {
                         self.server_error = Some(err);
@@ -370,6 +410,18 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                     }
                     UiMsg::PermissionRequest(info) => {
                         self.pending_permissions.push(info);
+                    }
+                    UiMsg::AuthSyncComplete(state) => {
+                        self.auth_sync_state = state;
+                    }
+                    UiMsg::ModelsDiscovered(models) => {
+                        self.discovery_models = models;
+                        self.discovery_in_progress = false;
+                        self.discovery_error = None;
+                    }
+                    UiMsg::ModelDiscoveryError(error) => {
+                        self.discovery_error = Some(error);
+                        self.discovery_in_progress = false;
                     }
                     UiMsg::AudioError(err) => {
                         self.audio_enabled = false;
@@ -756,6 +808,7 @@ self.tabs.push(Tab {
                 directory: None, 
                 messages: Vec::new(),
                 input: String::new(),
+                selected_model: None,
             });
             self.active = 0;
             
@@ -781,10 +834,11 @@ match c.create_session(None).await {
                 let mut rename_action: Option<(usize, String)> = None;
                 let mut cancel_rename = false;
                 
+                let mut model_changed: Option<(usize, Option<(String, String)>)> = None;
                 for (i, tab) in self.tabs.iter().enumerate() {
                     let selected = self.active == i;
                     
-                    // Group tab label and close button together
+                    // Group tab label, model selector, and close button together
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
@@ -844,6 +898,59 @@ match c.create_session(None).await {
                                 });
                             }
                             
+                            // Model selector dropdown
+                            if !self.models_config.get_curated_models().is_empty() {
+                                ui.separator();
+                                
+                                // Display current model or default
+                                let current_display = if let Some((provider, model_id)) = &tab.selected_model {
+                                    // Find model name from curated list
+                                    self.models_config.get_curated_models()
+                                        .iter()
+                                        .find(|m| &m.provider == provider && &m.model_id == model_id)
+                                        .map(|m| m.name.clone())
+                                        .unwrap_or_else(|| format!("{provider}/{model_id}"))
+                                } else {
+                                    match &self.auth_sync_state.status {
+                                        crate::startup::auth::AuthSyncStatus::InProgress => "⏳".to_string(),
+                                        crate::startup::auth::AuthSyncStatus::Complete => "(default)".to_string(),
+                                        crate::startup::auth::AuthSyncStatus::Failed(_) => "❌".to_string(),
+                                        _ => "...".to_string(),
+                                    }
+                                };
+                                
+                                egui::ComboBox::from_id_salt(format!("model_selector_{i}"))
+                                    .selected_text(current_display)
+                                    .width(120.0)
+                                    .show_ui(ui, |ui| {
+                                        // Option to use default model
+                                        if ui.selectable_label(tab.selected_model.is_none(), "(use default)").clicked() {
+                                            model_changed = Some((i, None));
+                                        }
+                                        
+                                        ui.separator();
+                                        
+                                        // Show curated models
+                                        for model in self.models_config.get_curated_models() {
+                                            let is_selected = tab.selected_model.as_ref()
+                                                .map(|(p, m)| p == &model.provider && m == &model.model_id)
+                                                .unwrap_or(false);
+                                            
+                                            if ui.selectable_label(is_selected, &model.name).clicked() {
+                                                model_changed = Some((i, Some((model.provider.clone(), model.model_id.clone()))));
+                                            }
+                                        }
+                                        
+                                        ui.separator();
+                                        
+                                        // Link to manage models
+                                        if ui.small_button("⚙ Manage Models").clicked() {
+                                            self.show_settings = true;
+                                            ui.close();
+                                        }
+                                    });
+                            }
+                            
                             if ui.small_button("X").clicked() {
                                 to_close = Some(i);
                             }
@@ -852,6 +959,11 @@ match c.create_session(None).await {
                 }
                 
                 // Apply deferred actions
+                if let Some((idx, model)) = model_changed {
+                    if let Some(tab) = self.tabs.get_mut(idx) {
+                        tab.selected_model = model;
+                    }
+                }
                 if let Some((idx, new_title)) = rename_action {
                     if let Some(tab) = self.tabs.get_mut(idx) {
                         tab.title = new_title;
@@ -886,6 +998,7 @@ self.tabs.push(Tab {
                         directory: None, 
                         messages: Vec::new(),
                         input: String::new(),
+                        selected_model: None,
                     });
                     self.active = tab_idx;
                     if let (Some(rt), Some(tx), Some(client)) = (&self.runtime, &self.ui_tx, &self.client) {
@@ -1076,8 +1189,243 @@ match c.create_session(None).await {
                                 self.config.save();
                             }
                         });
+                        
+                        ui.add_space(16.0);
+                        
+                        // Models Section
+                        ui.collapsing("Models", |ui| {
+                            ui.heading("Curated Models");
+                            ui.separator();
+                            
+                            ui.label("Your curated models:");
+                            ui.add_space(8.0);
+                            
+                            // Display curated models with remove buttons
+                            let mut model_to_remove: Option<(String, String)> = None;
+                            for model in self.models_config.get_curated_models() {
+                                ui.horizontal(|ui| {
+                                    ui.label(format!("{}  ({}/{})", model.name, model.provider, model.model_id));
+                                    if ui.small_button("✖").clicked() {
+                                        model_to_remove = Some((model.provider.clone(), model.model_id.clone()));
+                                    }
+                                });
+                            }
+                            
+                            // Remove model if requested (deferred to avoid borrow issues)
+                            if let Some((provider, model_id)) = model_to_remove {
+                                self.models_config.remove_curated_model(&provider, &model_id);
+                                let _ = self.models_config.save();
+                            }
+                            
+                            ui.add_space(8.0);
+                            
+                            // Add Model button
+                            if ui.button("+ Add Model").clicked() {
+                                self.show_model_discovery = true;
+                            }
+                            
+                            ui.add_space(16.0);
+                            ui.separator();
+                            
+                            // Default model selector
+                            ui.label("Default model for new tabs:");
+                            let current_default = self.models_config.models.default_model.clone();
+                            let curated_models = self.models_config.get_curated_models().to_vec();
+                            egui::ComboBox::from_id_salt("default_model_selector")
+                                .selected_text(&current_default)
+                                .show_ui(ui, |ui| {
+                                    for model in &curated_models {
+                                        let model_id = format!("{}/{}", model.provider, model.model_id);
+                                        if ui.selectable_value(&mut self.models_config.models.default_model, model_id.clone(), &model.name).clicked() {
+                                            let _ = self.models_config.save();
+                                        }
+                                    }
+                                });
+                            
+                            ui.add_space(8.0);
+                            
+                            // Auth sync status display
+                            ui.separator();
+                            ui.label("API Key Sync Status:");
+                            match &self.auth_sync_state.status {
+                                crate::startup::auth::AuthSyncStatus::NotStarted => {
+                                    ui.label("⏸ Not started");
+                                }
+                                crate::startup::auth::AuthSyncStatus::InProgress => {
+                                    ui.label("⏳ Syncing keys to server...");
+                                }
+                                crate::startup::auth::AuthSyncStatus::Complete => {
+                                    ui.label("✅ Complete");
+                                    if !self.auth_sync_state.synced_providers.is_empty() {
+                                        ui.small(format!("Synced: {}", self.auth_sync_state.synced_providers.join(", ")));
+                                    }
+                                    if !self.auth_sync_state.failed_providers.is_empty() {
+                                        for (provider, error) in &self.auth_sync_state.failed_providers {
+                                            ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("❌ {provider}: {error}"));
+                                        }
+                                    }
+                                }
+                                crate::startup::auth::AuthSyncStatus::Failed(err) => {
+                                    ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("❌ Failed: {err}"));
+                                }
+                            }
+                        });
                     });
                 });
+        }
+        
+        // Model Discovery Window
+        if self.show_model_discovery {
+            let mut close_requested = false;
+            egui::Window::new("Add Model")
+                .default_width(500.0)
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        // Step 1: Select Provider (if not selected yet)
+                        if self.discovery_provider.is_none() {
+                            ui.heading("Select a provider:");
+                            ui.separator();
+                            ui.add_space(8.0);
+                            
+                            for provider in self.models_config.get_providers() {
+                                if ui.button(&provider.display_name).clicked() {
+                                    self.discovery_provider = Some(provider.name.clone());
+                                    self.discovery_in_progress = true;
+                                    self.discovery_error = None;
+                                    self.discovery_models.clear();
+                                    
+                                    // Spawn async task to discover models
+                                    if let (Some(rt), Some(tx)) = (&self.runtime, &self.ui_tx) {
+                                        let provider_config = provider.clone();
+                                        let tx = tx.clone();
+                                        let egui_ctx = ctx.clone();
+                                        
+                                        // Get API key from environment
+                                        if let Ok(api_key) = std::env::var(&provider_config.api_key_env) {
+                                            rt.spawn(async move {
+                                                let provider_client = crate::client::providers::ProviderClient::new().unwrap();
+                                                match provider_client.discover_models(&provider_config, &api_key).await {
+                                                    Ok(models) => {
+                                                        let _ = tx.send(UiMsg::ModelsDiscovered(models));
+                                                    }
+                                                    Err(e) => {
+                                                        let _ = tx.send(UiMsg::ModelDiscoveryError(e.to_string()));
+                                                    }
+                                                }
+                                                egui_ctx.request_repaint();
+                                            });
+                                        } else {
+                                            self.discovery_error = Some(format!("API key not found: {}", provider_config.api_key_env));
+                                            self.discovery_in_progress = false;
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            ui.add_space(8.0);
+                            if ui.button("Cancel").clicked() {
+                                close_requested = true;
+                            }
+                        }
+                        // Step 2: Display discovered models
+                        else {
+                            let provider_name = self.discovery_provider.as_ref().unwrap().clone();
+                            ui.heading(format!("Add Model from {provider_name}"));
+                            ui.separator();
+                            ui.add_space(8.0);
+                            
+                            // Show loading spinner or error
+                            if self.discovery_in_progress {
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.label("Discovering models...");
+                                });
+                            } else if let Some(error) = &self.discovery_error {
+                                ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("Error: {error}"));
+                            } else if !self.discovery_models.is_empty() {
+                                // Search box
+                                ui.horizontal(|ui| {
+                                    ui.label("Search:");
+                                    ui.text_edit_singleline(&mut self.discovery_search);
+                                });
+                                ui.add_space(8.0);
+                                
+                                // Filter models by search
+                                let search_lower = self.discovery_search.to_lowercase();
+                                let filtered_models: Vec<_> = self.discovery_models.iter()
+                                    .filter(|m| search_lower.is_empty() || 
+                                             m.id.to_lowercase().contains(&search_lower) || 
+                                             m.name.to_lowercase().contains(&search_lower))
+                                    .cloned()
+                                    .collect();
+                                
+                                ui.label(format!("{} models found:", filtered_models.len()));
+                                ui.separator();
+                                
+                                let mut model_to_add: Option<crate::client::providers::DiscoveredModel> = None;
+                                egui::ScrollArea::vertical()
+                                    .max_height(300.0)
+                                    .show(ui, |ui| {
+                                        for model in &filtered_models {
+                                            ui.horizontal(|ui| {
+                                                if ui.button("+").clicked() {
+                                                    model_to_add = Some(model.clone());
+                                                }
+                                                ui.label(format!("{} ({})", model.name, model.id));
+                                            });
+                                        }
+                                    });
+                                
+                                // Add model if requested (deferred to avoid borrow issues)
+                                if let Some(model) = model_to_add {
+                                    let curated_model = crate::config::models::CuratedModel::new(
+                                        model.name.clone(),
+                                        provider_name.clone(),
+                                        model.id.clone(),
+                                    );
+                                    self.models_config.add_curated_model(curated_model);
+                                    let _ = self.models_config.save();
+                                    
+                                    // Show success and close
+                                    close_requested = true;
+                                    self.discovery_provider = None;
+                                    self.discovery_models.clear();
+                                    self.discovery_search.clear();
+                                }
+                            }
+                            
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Back").clicked() {
+                                    self.discovery_provider = None;
+                                    self.discovery_models.clear();
+                                    self.discovery_error = None;
+                                    self.discovery_in_progress = false;
+                                    self.discovery_search.clear();
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    close_requested = true;
+                                    self.discovery_provider = None;
+                                    self.discovery_models.clear();
+                                    self.discovery_error = None;
+                                    self.discovery_in_progress = false;
+                                    self.discovery_search.clear();
+                                }
+                            });
+                        }
+                    });
+                    
+                    // Close button
+                    ui.horizontal(|ui| {
+                        if ui.button("✖ Close").clicked() {
+                            close_requested = true;
+                        }
+                    });
+                });
+            
+            if close_requested {
+                self.show_model_discovery = false;
+            }
         }
         
         // Execute deferred actions
@@ -1128,12 +1476,13 @@ match c.create_session(None).await {
                                 if send_key && send_enabled {
                                     if let (Some(client), Some(sid)) = (&self.client, &tab.session_id) {
                                         let text = tab.input.clone();
+                                        let model = tab.selected_model.clone();
                                         tab.input.clear();
                                         let c = client.clone();
                                         let sid = sid.clone();
                                         if let Some(rt) = &self.runtime {
                                             rt.spawn(async move {
-                                                let _ = c.send_message(&sid, &text).await;
+                                                let _ = c.send_message(&sid, &text, model).await;
                                             });
                                         }
                                     }
@@ -1147,12 +1496,13 @@ match c.create_session(None).await {
                             if ui.add_enabled(send_enabled, egui::Button::new("Send")).clicked() {
                                 if let (Some(client), Some(sid)) = (&self.client, &tab.session_id) {
                                     let text = tab.input.clone();
+                                    let model = tab.selected_model.clone();
                                     tab.input.clear();
                                     let c = client.clone();
                                     let sid = sid.clone();
                                     if let Some(rt) = &self.runtime {
                                         rt.spawn(async move {
-                                            let _ = c.send_message(&sid, &text).await;
+                                            let _ = c.send_message(&sid, &text, model).await;
                                         });
                                     }
                                 }

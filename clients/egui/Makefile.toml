@@ -34,20 +34,88 @@ else
 end
 '''
 
+[tasks.setup-config-dev]
+description = "Copy .env (if exists) and config directory for development builds"
+script_runner = "@duckscript"
+script = '''
+target_dir = set "target/debug"
+
+# Copy .env if it exists (for dev builds with real API keys)
+env_file = set ".env"
+env_exists = is_path_exists ${env_file}
+if ${env_exists}
+    echo "Copying .env to ${target_dir}..."
+    cp ${env_file} ${target_dir}/.env
+    echo "✓ .env ready"
+else
+    echo "⚠️  No .env file found - copy .env.example to .env and add your API keys"
+    cp .env.example ${target_dir}/.env
+end
+
+# Always copy config directory (overwrite to get latest provider configs)
+echo "Copying config directory to ${target_dir}..."
+# Create config directory (mkdir is idempotent in duckscript)
+mkdir ${target_dir}/config
+# Remove old file if exists to force overwrite
+config_file = set "${target_dir}/config/models.toml"
+config_exists = is_path_exists ${config_file}
+if ${config_exists}
+    rm ${config_file}
+end
+# Copy fresh version
+cp config/models.toml ${config_file}
+echo "✓ config/ ready (updated)"
+'''
+
+[tasks.setup-config-release]
+description = "Copy .env.example and config directory for production builds"
+script_runner = "@duckscript"
+script = '''
+target_dir = set "target/release"
+
+# Copy .env.example for production builds (users fill in their own keys)
+echo "Copying .env.example to ${target_dir}..."
+cp .env.example ${target_dir}/.env.example
+echo "✓ .env.example ready (rename to .env and add your API keys)"
+
+# Always copy config directory (overwrite to get latest provider configs)
+echo "Copying config directory to ${target_dir}..."
+# Create config directory (mkdir is idempotent in duckscript)
+mkdir ${target_dir}/config
+# Remove old file if exists to force overwrite
+config_file = set "${target_dir}/config/models.toml"
+config_exists = is_path_exists ${config_file}
+if ${config_exists}
+    rm ${config_file}
+end
+# Copy fresh version
+cp config/models.toml ${config_file}
+echo "✓ config/ ready (updated)"
+'''
+
 [tasks.build]
-description = "Build the project"
+description = "Build the project (debug)"
 command = "cargo"
 args = ["build"]
 
+[tasks.build-release]
+description = "Build the project (release)"
+command = "cargo"
+args = ["build", "--release"]
+
 [tasks.dev]
-description = "Build and setup models (does not run)"
-dependencies = ["build", "setup-models"]
+description = "Build and setup for development (does not run)"
+dependencies = ["build", "setup-models", "setup-config-dev"]
 
 [tasks.run]
 description = "Build, setup models, and run"
 dependencies = ["dev"]
 command = "cargo"
 args = ["run"]
+
+[tasks.release]
+description = "Build production release with config"
+dependencies = ["build-release", "setup-config-release"]
 
 [tasks.default]
 alias = "dev"

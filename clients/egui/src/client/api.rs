@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::error::api::ApiError;
+use crate::types::models::{MessageRequest, MessagePart, ModelIdentifier};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
@@ -118,17 +119,20 @@ impl OpencodeClient {
         Ok(resp.status().is_success())
     }
 
-    pub async fn send_message(&self, session_id: &str, text: &str) -> Result<(), ApiError> {
+    pub async fn send_message(&self, session_id: &str, text: &str, model: Option<(String, String)>) -> Result<(), ApiError> {
         let url = self
             .base
             .join(&format!("session/{session_id}/message"))
             .map_err(|e| ApiError::Url(e.to_string()))?;
-        let body = serde_json::json!({
-            "parts": [{
-                "type": "text",
-                "text": text,
-            }]
-        });
+        
+        let body = MessageRequest {
+            parts: vec![MessagePart {
+                part_type: "text".to_string(),
+                text: text.to_string(),
+            }],
+            model: model.map(|(provider_id, model_id)| ModelIdentifier::new(provider_id, model_id)),
+        };
+        
         let resp = self
             .with_dir(self.http.post(url).json(&body))
             .send()
