@@ -1,5 +1,24 @@
 # Feature: Permission Request Handling in EGUI Client
 
+## Status: ✅ COMPLETED (2025-12-08)
+
+**Implementation Summary**:
+- Inline permission UI integrated into tool call bubbles
+- Auto-expands collapsible header when permission is pending
+- Session-level prompt gating (blocks input until permission resolved)
+- Generic handling of all permission types (external_directory, bash, write, etc.)
+- Feature parity with TUI client achieved
+
+**Key Implementation Details**:
+- Permission approval UI renders inline within the tool's chat bubble (not modal)
+- Collapsible tool section auto-expands when permission is pending
+- Matches permissions to tool calls via `call_id` and `session_id`
+- Three response buttons: ❌ Reject, ✅ Allow Once, ✅ Always Allow
+- Input prompt disabled while any permission is pending in the session
+- No debug logging spam (removed after validation)
+
+---
+
 ## Problem
 
 The OpenCode EGUI client currently does not handle permission requests from the server. When the agent attempts actions that require user approval (accessing external directories, executing commands, fetching URLs, etc.), the server blocks waiting for a response that never comes.

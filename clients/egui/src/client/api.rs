@@ -139,4 +139,21 @@ impl OpencodeClient {
         }
         Ok(())
     }
+
+    pub async fn respond_permission(&self, session_id: &str, permission_id: &str, response: &str) -> Result<(), ApiError> {
+        let url = self
+            .base
+            .join(&format!("session/{session_id}/permissions/{permission_id}"))
+            .map_err(|e| ApiError::Url(e.to_string()))?;
+        let body = serde_json::json!({ "response": response });
+        let resp = self
+            .with_dir(self.http.post(url).json(&body))
+            .send()
+            .await
+            .map_err(|e| ApiError::Http(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(ApiError::Http(format!("Status {}", resp.status())));
+        }
+        Ok(())
+    }
 }

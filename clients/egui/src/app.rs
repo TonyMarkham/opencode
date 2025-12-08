@@ -1,6 +1,7 @@
 use eframe::egui;
 use std::sync::{Arc, mpsc};
 use tokio::runtime::Runtime;
+use serde::Deserialize;
 
 use crate::discovery::process::{ServerInfo, check_health, discover, stop_pid};
 use crate::discovery::spawn::spawn_and_wait;
@@ -40,6 +41,9 @@ pub struct OpenCodeApp {
     base_url_input: String,
     directory_input: String,
     
+    // Permission handling
+    pending_permissions: Vec<PermissionInfo>,
+    
     // Markdown rendering
     commonmark_cache: egui_commonmark::CommonMarkCache,
 }
@@ -65,6 +69,7 @@ struct DisplayMessage {
 struct ToolCall {
     name: String,
     status: String,
+    call_id: Option<String>,
 }
 
 enum UiMsg {
@@ -72,11 +77,34 @@ enum UiMsg {
     ServerError(String),
     SessionCreated { tab_idx: usize, id: String, title: String, directory: String },
     GlobalEvent(serde_json::Value),
+    PermissionRequest(PermissionInfo),
     // Audio events
     RecordingStarted,
     RecordingStopped,
     Transcription(String),
     AudioError(String),
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PermissionInfo {
+    id: String,
+    #[serde(rename = "type")]
+    perm_type: String,
+    pattern: Option<Vec<String>>,
+    #[serde(rename = "sessionID")]
+    session_id: String,
+    #[serde(rename = "messageID")]
+    message_id: String,
+    #[serde(rename = "callID")]
+    call_id: Option<String>,
+    title: String,
+    metadata: serde_json::Value,
+    time: PermissionTime,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct PermissionTime {
+    created: u64,
 }
 
 enum AudioCmd {
@@ -121,6 +149,7 @@ impl OpenCodeApp {
             show_settings: false,
             base_url_input: config.server.last_base_url.unwrap_or_default(),
             directory_input: config.server.directory_override.clone().unwrap_or_default(),
+            pending_permissions: Vec::new(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
         }
     }
@@ -184,7 +213,9 @@ impl OpenCodeApp {
         });
     }
 
-fn poll_ui_msgs(&mut self, ctx: &egui::Context) {
+/// Drain the UI message channel fed by background tasks (e.g., SSE subscription).
+/// This is not network polling; it only drains already-received events.
+fn drain_ui_msgs(&mut self, ctx: &egui::Context) {
         if let Some(rx) = &self.ui_rx {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
@@ -236,7 +267,42 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                         }
                     }
                     UiMsg::GlobalEvent(payload) => {
-                        // Extract sessionID from event
+                        // Permission handling
+                        let event_type = payload.get("type").and_then(|v| v.as_str());
+                        match event_type {
+                            Some("permission.updated") => {
+                                if let Some(props) = payload.get("properties") {
+                                    match serde_json::from_value::<PermissionInfo>(props.clone()) {
+                                        Ok(info) => {
+                                            self.pending_permissions.push(info);
+                                        }
+                                        Err(_e) => { }
+                                    }
+                                }
+                                // Do not route permission events into chat rendering
+                                continue;
+                            }
+                            Some("permission.replied") => {
+                                if let Some(props) = payload.get("properties") {
+                                    let pid = props.get("permissionID").and_then(|v| v.as_str());
+                                    let sid = props.get("sessionID").and_then(|v| v.as_str());
+                                    let resp = props.get("response").and_then(|v| v.as_str()).unwrap_or("?");
+                                    if let (Some(pid), Some(sid)) = (pid, sid) {
+                                        if let Some(idx) = self
+                                            .pending_permissions
+                                            .iter()
+                                            .position(|p| p.id == pid && p.session_id == sid)
+                                        {
+                                            self.pending_permissions.remove(idx);
+                                        }
+                                    }
+                                }
+                                continue;
+                            }
+                            _ => {}
+                        }
+
+                        // Extract sessionID from event for chat updates
                         let sid_opt = payload
                             .get("properties")
                             .and_then(|p| p.get("part"))
@@ -301,6 +367,9 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                                 tool_calls: Vec::new(),
                             });
                         }
+                    }
+                    UiMsg::PermissionRequest(info) => {
+                        self.pending_permissions.push(info);
                     }
                     UiMsg::AudioError(err) => {
                         self.audio_enabled = false;
@@ -373,14 +442,19 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                         } else if part_type == Some("tool") {
                             let tool_name = part.get("tool").and_then(|v| v.as_str()).unwrap_or("unknown");
                             let state = part.get("state").and_then(|v| v.get("status")).and_then(|v| v.as_str()).unwrap_or("unknown");
+                            let call_id = part.get("callID").and_then(|v| v.as_str()).map(|s| s.to_string());
                             if let Some(msg) = tab.messages.last_mut() {
-                                // For tool calls, check if this tool already exists and update it
-                                if let Some(existing) = msg.tool_calls.iter_mut().find(|t| t.name == tool_name) {
+                                // Prefer matching by call_id when present, otherwise fallback to name
+                                if let Some(existing) = msg.tool_calls.iter_mut().find(|t| {
+                                    if let (Some(a), Some(b)) = (&t.call_id, &call_id) { a == b } else { t.name == tool_name }
+                                }) {
                                     existing.status = state.to_string();
+                                    if existing.call_id.is_none() { existing.call_id = call_id.clone(); }
                                 } else {
                                     msg.tool_calls.push(ToolCall {
                                         name: tool_name.to_string(),
                                         status: state.to_string(),
+                                        call_id: call_id,
                                     });
                                 }
                             }
@@ -393,9 +467,10 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
     }
 
     fn render_message(
+        &mut self,
         ui: &mut egui::Ui, 
         msg: &DisplayMessage,
-        cache: &mut egui_commonmark::CommonMarkCache,
+        session_id: Option<&str>,
     ) {
         let message_id = msg.message_id.clone();
         let available_width = ui.available_width();
@@ -425,7 +500,7 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                             ui.set_max_width(bubble_max_width);
                             if !full_text.is_empty() {
                                 egui_commonmark::CommonMarkViewer::new()
-                                    .show(ui, cache, &full_text);
+                                    .show(ui, &mut self.commonmark_cache, &full_text);
                             }
                         });
                     
@@ -450,7 +525,7 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                                 egui_twemoji::EmojiLabel::new(&full_text).show(ui);
                             } else {
                                 egui_commonmark::CommonMarkViewer::new()
-                                    .show(ui, cache, &full_text);
+                                    .show(ui, &mut self.commonmark_cache, &full_text);
                             }
                         } else if msg.role == "assistant" && msg.tool_calls.is_empty() {
                             // Show spinner only when no text AND no tools (truly waiting for response)
@@ -469,6 +544,17 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                                 t.status != "success" && t.status != "error" && t.status != "completed"
                             );
                             
+                            // Check if any tool has a pending permission
+                            let has_pending_perm = session_id.is_some() && msg.tool_calls.iter().any(|tool| {
+                                if let Some(call_id) = &tool.call_id {
+                                    self.pending_permissions.iter().any(|p| 
+                                        p.session_id == session_id.unwrap() && p.call_id.as_deref() == Some(call_id.as_str())
+                                    )
+                                } else {
+                                    false
+                                }
+                            });
+                            
                             ui.horizontal(|ui| {
                                 if any_in_progress {
                                     ui.spinner();
@@ -477,16 +563,53 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                                 let header_text = format!("🔧 {} tool call(s)", msg.tool_calls.len());
                                 egui::CollapsingHeader::new(header_text)
                                     .id_salt(&message_id)
+                                    .default_open(has_pending_perm)  // Auto-expand if permission pending
                                     .show(ui, |ui| {
                                     for tool in &msg.tool_calls {
-                                        ui.horizontal(|ui| {
-                                            let status_icon = match tool.status.as_str() {
-                                                "success" | "completed" => "✅",  // Check mark button
-                                                "error" => "❌",  // Cross mark
-                                                _ => "⏳",  // Hourglass
-                                            };
-                                            ui.label(&tool.name);
-                                            egui_twemoji::EmojiLabel::new(format!("{} {}", status_icon, tool.status)).show(ui);
+                                        ui.vertical(|ui| {
+                                            ui.horizontal(|ui| {
+                                                let status_icon = match tool.status.as_str() {
+                                                    "success" | "completed" => "✅",
+                                                    "error" => "❌",
+                                                    _ => "⏳",
+                                                };
+                                                ui.label(&tool.name);
+                                                egui_twemoji::EmojiLabel::new(format!("{} {}", status_icon, tool.status)).show(ui);
+                                            });
+
+                                            // Inline permission card for this tool if pending
+                                            if let (Some(sid), Some(call)) = (session_id, &tool.call_id) {
+                                                let perm_opt = self
+                                                    .pending_permissions
+                                                    .iter()
+                                                    .find(|p| p.session_id == sid && p.call_id.as_deref() == Some(call.as_str()))
+                                                    .cloned();
+                                                if let Some(perm) = perm_opt {
+                                                    ui.add_space(4.0);
+                                                    egui::Frame::none()
+                                                        .fill(egui::Color32::from_gray(40))
+                                                        .inner_margin(egui::Margin::symmetric(8i8, 6i8))
+                                                        .show(ui, |ui| {
+                                                            ui.label(format!("Permission required: {}", perm.title));
+                                                            ui.small(format!("Type: {}", perm.perm_type));
+                                                            ui.add_space(6.0);
+                                                            ui.horizontal(|ui| {
+                                                                if ui.button("❌ Reject").clicked() {
+                                                                    self.action_respond_permission(perm.session_id.clone(), perm.id.clone(), "reject");
+                                                                    if let Some(idx) = self.pending_permissions.iter().position(|p| p.id == perm.id) { self.pending_permissions.remove(idx); }
+                                                                }
+                                                                if ui.button("✅ Allow Once").clicked() {
+                                                                    self.action_respond_permission(perm.session_id.clone(), perm.id.clone(), "once");
+                                                                    if let Some(idx) = self.pending_permissions.iter().position(|p| p.id == perm.id) { self.pending_permissions.remove(idx); }
+                                                                }
+                                                                if ui.button("✅ Always Allow").clicked() {
+                                                                    self.action_respond_permission(perm.session_id.clone(), perm.id.clone(), "always");
+                                                                    if let Some(idx) = self.pending_permissions.iter().position(|p| p.id == perm.id) { self.pending_permissions.remove(idx); }
+                                                                }
+                                                            });
+                                                        });
+                                                }
+                                            }
                                         });
                                     }
                                 });
@@ -521,6 +644,18 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
             let _ = tx.send(msg);
             egui_ctx.request_repaint();
         });
+    }
+}
+
+impl OpenCodeApp {
+    fn action_respond_permission(&mut self, session_id: String, perm_id: String, response: &str) {
+        if let (Some(client), Some(rt)) = (&self.client, &self.runtime) {
+            let c = client.clone();
+            let resp = response.to_string();
+            rt.spawn(async move {
+                let _ = c.respond_permission(&session_id, &perm_id, &resp).await;
+            });
+        }
     }
 }
 
@@ -609,8 +744,8 @@ impl eframe::App for OpenCodeApp {
             self.start_server_discovery(ctx);
         }
         
-        // Drain async messages
-        self.poll_ui_msgs(ctx);
+        // Drain async messages (SSE-fed channel)
+        self.drain_ui_msgs(ctx);
         
         // Auto-create first tab when client is ready
         if self.tabs.is_empty() && self.client.is_some() && self.runtime.is_some() && self.ui_tx.is_some() {
@@ -966,6 +1101,8 @@ match c.create_session(None).await {
             if !self.tabs.is_empty() {
                 if let Some(tab) = self.tabs.get_mut(self.active) {
                     let has_session = tab.session_id.is_some();
+                    let session_id = tab.session_id.clone();
+                    let blocked = session_id.as_ref().and_then(|sid| self.pending_permissions.iter().find(|p| p.session_id == *sid)).is_some();
                     
                     ui.horizontal(|ui| {
                         // Text input
@@ -976,7 +1113,7 @@ match c.create_session(None).await {
                             .max_height(text_height * 3.0)
                             .show(ui, |ui| {
                                 let _response = ui.add_enabled(
-                                    has_session,
+                                    has_session && !blocked,
                                     egui::TextEdit::multiline(&mut tab.input)
                                         .desired_width(available_width)
                                         .desired_rows(3)
@@ -987,7 +1124,7 @@ match c.create_session(None).await {
                                     i.modifiers.command && i.key_pressed(egui::Key::Enter)
                                 });
                                 
-                                let send_enabled = has_session && !tab.input.trim().is_empty();
+                                let send_enabled = has_session && !blocked && !tab.input.trim().is_empty();
                                 if send_key && send_enabled {
                                     if let (Some(client), Some(sid)) = (&self.client, &tab.session_id) {
                                         let text = tab.input.clone();
@@ -1006,7 +1143,7 @@ match c.create_session(None).await {
                         
                         // Send button and hint
                         ui.vertical(|ui| {
-                            let send_enabled = has_session && !tab.input.trim().is_empty();
+                            let send_enabled = has_session && !blocked && !tab.input.trim().is_empty();
                             if ui.add_enabled(send_enabled, egui::Button::new("Send")).clicked() {
                                 if let (Some(client), Some(sid)) = (&self.client, &tab.session_id) {
                                     let text = tab.input.clone();
@@ -1022,6 +1159,8 @@ match c.create_session(None).await {
                             }
                             if !has_session {
                                 ui.small("(Wait...)");
+                            } else if blocked {
+                                ui.small("Permission pending — respond in tool bubble");
                             } else if self.audio_tx.is_some() {
                                 ui.small("⌘+Enter | AltRight: Record");
                             } else {
@@ -1066,8 +1205,10 @@ match c.create_session(None).await {
                             });
                         } else if let Some(tab) = self.tabs.get(self.active) {
                             let spacing = self.config.ui.chat_density.message_spacing();
-                            for msg in &tab.messages {
-                                Self::render_message(ui, msg, &mut self.commonmark_cache);
+                            let (session_id_opt, messages_copy) = (tab.session_id.clone(), tab.messages.clone());
+                            drop(tab);
+                            for msg in &messages_copy {
+                                self.render_message(ui, msg, session_id_opt.as_deref());
                                 ui.add_space(spacing);
                             }
                         }
