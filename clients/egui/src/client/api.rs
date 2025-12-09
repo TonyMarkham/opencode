@@ -140,7 +140,7 @@ impl OpencodeClient {
     pub async fn send_message(
         &self,
         session_id: &str,
-        text: &str,
+        parts: Vec<MessagePart>,
         model: Option<(String, String)>,
         agent: Option<String>,
     ) -> Result<(), ApiError> {
@@ -150,15 +150,14 @@ impl OpencodeClient {
             .map_err(|e| ApiError::Url(e.to_string()))?;
 
         let body = MessageRequest {
-            parts: vec![MessagePart {
-                part_type: "text".to_string(),
-                text: text.to_string(),
-            }],
-            model: model.map(|(provider_id, model_id)| ModelIdentifier::new(provider_id, model_id)),
+            parts,
+            model: model
+                .map(|(provider_id, model_id)| ModelIdentifier::new(provider_id, model_id)),
             agent: agent.clone(),
         };
 
         let resp = self
+
             .with_dir(self.http.post(url).json(&body))
             .send()
             .await

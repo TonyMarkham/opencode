@@ -3,6 +3,12 @@ use serde::Deserialize;
 use std::sync::{Arc, mpsc};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
+use arboard;
+use image::codecs::png::PngEncoder;
+use image::ExtendedColorType;
+use base64;
+use base64::Engine;
+use image::ImageEncoder;
 
 use crate::discovery::process::{ServerInfo, check_health, discover, stop_pid};
 use crate::discovery::spawn::spawn_and_wait;
@@ -88,6 +94,13 @@ pub(crate) struct Tab {
     cancelled_after: Option<i64>,
     suppress_incoming: bool,
     last_send_at: i64,
+    pending_attachments: Vec<PendingAttachment>,
+}
+
+#[derive(Clone)]
+struct PendingAttachment {
+    data: Vec<u8>,
+    mime: String,
 }
 
 #[derive(Clone)]
@@ -116,6 +129,7 @@ struct ToolCall {
 enum UiMsg {
     ServerConnected(ServerInfo),
     ServerError(String),
+    AttachmentAdded(Vec<u8>, String),
     SessionCreated {
         tab_idx: usize,
         id: String,
@@ -622,6 +636,11 @@ impl OpenCodeApp {
                                 text_parts: vec![format!("⚠ Agents: {err}")],
                                 tool_calls: Vec::new(),
                             });
+                        }
+                    }
+                    UiMsg::AttachmentAdded(data, mime) => {
+                        if let Some(tab) = self.tabs.get_mut(self.active) {
+                            tab.pending_attachments.push(PendingAttachment { data, mime });
                         }
                     }
                     UiMsg::AudioError(err) => {
@@ -1635,7 +1654,9 @@ impl eframe::App for OpenCodeApp {
                 cancelled_after: None,
                 suppress_incoming: false,
                 last_send_at: 0,
+                pending_attachments: Vec::new(),
             });
+
             self.active = 0;
 
             let txc = self.ui_tx.as_ref().unwrap().clone();
@@ -1880,6 +1901,7 @@ impl eframe::App for OpenCodeApp {
                         cancelled_after: None,
                         suppress_incoming: false,
                         last_send_at: 0,
+                        pending_attachments: Vec::new(),
                     });
                     self.active = tab_idx;
                     if let (Some(rt), Some(tx), Some(client)) =
@@ -2548,6 +2570,26 @@ impl eframe::App for OpenCodeApp {
                         egui::ScrollArea::vertical()
                             .max_height(text_height * 3.0)
                             .show(ui, |ui| {
+                                if !tab.pending_attachments.is_empty() {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 4.0;
+                                        let mut remove_idx = None;
+                                        for (idx, _att) in tab.pending_attachments.iter().enumerate() {
+                                            ui.group(|ui| {
+                                                ui.horizontal(|ui| {
+                                                    ui.label("📎 Image");
+                                                    if ui.small_button("✖").clicked() {
+                                                        remove_idx = Some(idx);
+                                                    }
+                                                });
+                                            });
+                                        }
+                                        if let Some(idx) = remove_idx {
+                                            tab.pending_attachments.remove(idx);
+                                        }
+                                    });
+                                }
+
                                 let _response = ui.add_enabled(
                                     has_session && !blocked,
                                     egui::TextEdit::multiline(&mut tab.input)
@@ -2563,7 +2605,8 @@ impl eframe::App for OpenCodeApp {
                                 let send_enabled = has_session
                                     && !blocked
                                     && !streaming
-                                    && !tab.input.trim().is_empty();
+                                    && (!tab.input.trim().is_empty()
+                                        || !tab.pending_attachments.is_empty());
                                 if send_key && send_enabled {
                                     if let (Some(client), Some(sid)) =
                                         (&self.client, &tab.session_id)
@@ -2583,12 +2626,26 @@ impl eframe::App for OpenCodeApp {
                                             .clone()
                                             .unwrap_or_else(|| self.default_agent.clone());
                                         tab.input.clear();
+                                        let mut parts = Vec::new();
+                                        if !text.is_empty() {
+                                            parts.push(crate::types::models::MessagePart::Text { text });
+                                        }
+                                        for att in &tab.pending_attachments {
+                                            let b64 = base64::engine::general_purpose::STANDARD
+                                                .encode(&att.data);
+                                            parts.push(crate::types::models::MessagePart::File {
+                                                mime: att.mime.clone(),
+                                                filename: None,
+                                                url: format!("data:{};base64,{}", att.mime, b64),
+                                            });
+                                        }
+                                        tab.pending_attachments.clear();
                                         let c = client.clone();
                                         let sid = sid.clone();
                                         if let Some(rt) = &self.runtime {
                                             rt.spawn(async move {
                                                 let _ = c
-                                                    .send_message(&sid, &text, model, Some(agent))
+                                                    .send_message(&sid, parts, model, Some(agent))
                                                     .await;
                                             });
                                         }
@@ -2600,6 +2657,33 @@ impl eframe::App for OpenCodeApp {
 
                         // Send / Stop controls and hint
                         ui.vertical(|ui| {
+                            if ui.button("📋 Paste Image").clicked() {
+                                if let Some(tx) = self.ui_tx.clone() {
+                                    let egui_ctx = ctx.clone();
+                                    std::thread::spawn(move || {
+                                        if let Ok(mut cb) = arboard::Clipboard::new() {
+                                            if let Ok(img) = cb.get_image() {
+                                                let w = img.width as u32;
+                                                let h = img.height as u32;
+                                                let mut png_data = Vec::new();
+                                                let encoder = PngEncoder::new(&mut png_data);
+                                                let color_type = ExtendedColorType::Rgba8;
+                                                if encoder
+                                                    .write_image(&img.bytes, w, h, color_type)
+                                                    .is_ok()
+                                                {
+                                                    let _ = tx.send(UiMsg::AttachmentAdded(
+                                                        png_data,
+                                                        "image/png".to_string(),
+                                                    ));
+                                                    egui_ctx.request_repaint();
+                                                }
+                                            }
+                                        }
+                                    });
+                                }
+                            }
+
                             if streaming {
                                 if ui
                                     .add_enabled(has_session, egui::Button::new("Stop"))
@@ -2625,7 +2709,8 @@ impl eframe::App for OpenCodeApp {
                             let send_enabled = has_session
                                 && !blocked
                                 && !streaming
-                                && !tab.input.trim().is_empty();
+                                && (!tab.input.trim().is_empty()
+                                    || !tab.pending_attachments.is_empty());
                             if ui
                                 .add_enabled(send_enabled, egui::Button::new("Send"))
                                 .clicked()
@@ -2646,12 +2731,26 @@ impl eframe::App for OpenCodeApp {
                                          .clone()
                                          .unwrap_or_else(|| self.default_agent.clone());
                                      tab.input.clear();
+                                     let mut parts = Vec::new();
+                                     if !text.is_empty() {
+                                         parts.push(crate::types::models::MessagePart::Text { text });
+                                     }
+                                     for att in &tab.pending_attachments {
+                                         let b64 = base64::engine::general_purpose::STANDARD
+                                             .encode(&att.data);
+                                         parts.push(crate::types::models::MessagePart::File {
+                                             mime: att.mime.clone(),
+                                             filename: None,
+                                             url: format!("data:{};base64,{}", att.mime, b64),
+                                         });
+                                     }
+                                     tab.pending_attachments.clear();
                                      let c = client.clone();
                                      let sid = sid.clone();
                                      if let Some(rt) = &self.runtime {
                                          rt.spawn(async move {
                                              let _ = c
-                                                 .send_message(&sid, &text, model, Some(agent))
+                                                 .send_message(&sid, parts, model, Some(agent))
                                                  .await;
                                          });
                                      }

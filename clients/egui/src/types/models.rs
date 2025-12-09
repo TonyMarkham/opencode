@@ -128,10 +128,17 @@ pub struct MessageRequest {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct MessagePart {
-    #[serde(rename = "type")]
-    pub part_type: String,
-    pub text: String,
+#[serde(tag = "type")]
+pub enum MessagePart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "file")]
+    File {
+        mime: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        filename: Option<String>,
+        url: String, // Data URI or external URL
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
