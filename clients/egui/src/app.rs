@@ -7,6 +7,7 @@ use tokio::runtime::Runtime;
 use crate::discovery::process::{ServerInfo, check_health, discover, stop_pid};
 use crate::discovery::spawn::spawn_and_wait;
 use crate::startup::auth::{AuthSyncState, sync_api_keys_to_server};
+use crate::types::agent::AgentInfo;
 
 fn dbg_log(msg: impl AsRef<str>) {
     eprintln!("[egui-debug] {}", msg.as_ref());
@@ -62,12 +63,18 @@ pub struct OpenCodeApp {
     // Permission handling
     pending_permissions: Vec<PermissionInfo>,
 
+    // Agents
+    agents: Vec<AgentInfo>,
+    show_subagents: bool,
+    agents_pane_collapsed: bool,
+    default_agent: String,
+
     // Markdown rendering
     commonmark_cache: egui_commonmark::CommonMarkCache,
 }
 
 #[derive(Default, Clone)]
-struct Tab {
+pub(crate) struct Tab {
     title: String,
     session_id: Option<String>,
     directory: Option<String>,
@@ -75,6 +82,7 @@ struct Tab {
     active_assistant: Option<String>,
     input: String,
     selected_model: Option<(String, String)>, // (provider, model_id)
+    pub(crate) selected_agent: Option<String>,
     cancelled_messages: Vec<String>,
     cancelled_calls: Vec<String>,
     cancelled_after: Option<i64>,
@@ -115,12 +123,16 @@ enum UiMsg {
         directory: String,
     },
     GlobalEvent(serde_json::Value),
+    #[allow(dead_code)]
     PermissionRequest(PermissionInfo),
     // Auth sync events
     AuthSyncComplete(AuthSyncState),
     // Model discovery events
     ModelsDiscovered(Vec<crate::client::providers::DiscoveredModel>),
     ModelDiscoveryError(String),
+    // Agent events
+    AgentsLoaded(Vec<AgentInfo>),
+    AgentsFailed(String),
     // Audio events
     RecordingStarted,
     RecordingStopped,
@@ -133,6 +145,7 @@ struct PermissionInfo {
     id: String,
     #[serde(rename = "type")]
     perm_type: String,
+    #[allow(dead_code)]
     pattern: Option<Vec<String>>,
     #[serde(rename = "sessionID")]
     session_id: String,
@@ -141,6 +154,7 @@ struct PermissionInfo {
     #[serde(rename = "callID")]
     call_id: Option<String>,
     title: String,
+    #[allow(dead_code)]
     metadata: serde_json::Value,
     time: PermissionTime,
 }
@@ -202,6 +216,10 @@ impl OpenCodeApp {
             discovery_in_progress: false,
             discovery_search: String::new(),
             pending_permissions: Vec::new(),
+            agents: Vec::new(),
+            show_subagents: false,
+            agents_pane_collapsed: false,
+            default_agent: "build".to_string(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
         }
     }
@@ -308,6 +326,25 @@ impl OpenCodeApp {
                         self.server = Some(info.clone());
                         self.server_error = None;
                         self.server_in_flight = false;
+
+                        if let (Some(rt), Some(tx_agents), Some(client)) =
+                            (&self.runtime, &self.ui_tx, &self.client)
+                        {
+                            let c = client.clone();
+                            let tx = tx_agents.clone();
+                            let egui_ctx_agents = ctx.clone();
+                            rt.spawn(async move {
+                                match c.list_agents().await {
+                                    Ok(list) => {
+                                        let _ = tx.send(UiMsg::AgentsLoaded(list));
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(UiMsg::AgentsFailed(e.to_string()));
+                                    }
+                                }
+                                egui_ctx_agents.request_repaint();
+                            });
+                        }
 
                         if let Some(rt) = &self.runtime {
                             let tx3 = self.ui_tx.as_ref().unwrap().clone();
@@ -441,7 +478,7 @@ impl OpenCodeApp {
                                 if let Some(props) = payload.get("properties") {
                                     let pid = props.get("permissionID").and_then(|v| v.as_str());
                                     let sid = props.get("sessionID").and_then(|v| v.as_str());
-                                    let resp = props
+                                    let _resp = props
                                         .get("response")
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("?");
@@ -554,6 +591,37 @@ impl OpenCodeApp {
                         self.discovery_error = Some(error);
                         self.discovery_in_progress = false;
                     }
+                    UiMsg::AgentsLoaded(list) => {
+                        self.agents = list;
+                        let filtered = Self::filtered_agents(self.show_subagents, &self.agents);
+                        let fallback = filtered
+                            .first()
+                            .map(|agent| agent.name.clone())
+                            .unwrap_or_else(|| "build".to_string());
+                        self.default_agent = fallback.clone();
+                        let default_agent = self.default_agent.clone();
+                        for tab in &mut self.tabs {
+                            Self::ensure_tab_agent(&default_agent, tab, &filtered);
+                        }
+                    }
+                    UiMsg::AgentsFailed(err) => {
+                        dbg_log(&format!("agent fetch failed: {err}"));
+                        if let Some(tab) = self.tabs.get_mut(self.active) {
+                            let msg_id = format!(
+                                "agent_err_{}",
+                                SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .unwrap_or_default()
+                                    .as_millis()
+                            );
+                            tab.messages.push(DisplayMessage {
+                                message_id: msg_id,
+                                role: "system".to_string(),
+                                text_parts: vec![format!("⚠ Agents: {err}")],
+                                tool_calls: Vec::new(),
+                            });
+                        }
+                    }
                     UiMsg::AudioError(err) => {
                         self.audio_enabled = false;
                         self.recording_state = RecordingState::Idle;
@@ -594,6 +662,45 @@ impl OpenCodeApp {
             let _ = tx.send(msg);
             egui_ctx.request_repaint();
         });
+    }
+
+    pub(crate) fn filtered_agents(show_subagents: bool, agents: &[AgentInfo]) -> Vec<AgentInfo> {
+        if show_subagents {
+            return agents.to_vec();
+        }
+        agents
+            .iter()
+            .filter(|agent| agent.mode.as_deref() != Some("subagent"))
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn ensure_tab_agent(default_agent: &str, tab: &mut Tab, filtered: &[AgentInfo]) {
+        if let Some(name) = tab.selected_agent.clone() {
+            if filtered.iter().any(|agent| agent.name == name) {
+                return;
+            }
+        }
+        tab.selected_agent = Some(default_agent.to_string());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_tab_with_agent(agent: Option<String>) -> Tab {
+        Tab {
+            selected_agent: agent,
+            ..Tab::default()
+        }
+    }
+
+    fn agent_color(hex: &str) -> Option<egui::Color32> {
+        let trimmed = hex.strip_prefix('#').unwrap_or(hex);
+        if trimmed.len() != 6 {
+            return None;
+        }
+        let r = u8::from_str_radix(&trimmed[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&trimmed[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&trimmed[4..6], 16).ok()?;
+        Some(egui::Color32::from_rgb(r, g, b))
     }
 
     fn handle_event(tab: &mut Tab, payload: &serde_json::Value) {
@@ -1051,11 +1158,9 @@ impl OpenCodeApp {
                                                     .cloned();
                                                 if let Some(perm) = perm_opt {
                                                     ui.add_space(4.0);
-                                                    egui::Frame::none()
+                                                    egui::Frame::default()
                                                         .fill(egui::Color32::from_gray(40))
-                                                        .inner_margin(egui::Margin::symmetric(
-                                                            8i8, 6i8,
-                                                        ))
+                                                        .inner_margin(egui::Margin::symmetric(8i8, 6i8))
                                                         .show(ui, |ui| {
                                                             ui.label(format!(
                                                                 "Permission required: {}",
@@ -1438,6 +1543,7 @@ impl eframe::App for OpenCodeApp {
                 active_assistant: None,
                 input: String::new(),
                 selected_model: None,
+                selected_agent: Some(self.default_agent.clone()),
                 cancelled_messages: Vec::new(),
                 cancelled_calls: Vec::new(),
                 cancelled_after: None,
@@ -1627,6 +1733,12 @@ impl eframe::App for OpenCodeApp {
                                     });
                             }
 
+                            let agent_display = tab
+                                .selected_agent
+                                .as_deref()
+                                .unwrap_or(self.default_agent.as_str());
+                            ui.small(format!("agent: {agent_display}"));
+
                             if ui.small_button("X").clicked() {
                                 to_close = Some(i);
                             }
@@ -1676,6 +1788,7 @@ impl eframe::App for OpenCodeApp {
                         active_assistant: None,
                         input: String::new(),
                         selected_model: None,
+                        selected_agent: Some(self.default_agent.clone()),
                         cancelled_messages: Vec::new(),
                         cancelled_calls: Vec::new(),
                         cancelled_after: None,
@@ -1942,6 +2055,27 @@ impl eframe::App for OpenCodeApp {
                             // Save density changes
                             if density_changed {
                                 self.config.save();
+                            }
+
+                            ui.add_space(8.0);
+
+                            let prev_subagents = self.show_subagents;
+                            ui.checkbox(
+                                &mut self.show_subagents,
+                                "Show subagents in agent list",
+                            );
+                            if self.show_subagents != prev_subagents {
+                                let filtered =
+                                    Self::filtered_agents(self.show_subagents, &self.agents);
+                                let fallback = filtered
+                                    .first()
+                                    .map(|agent| agent.name.clone())
+                                    .unwrap_or_else(|| "build".to_string());
+                                self.default_agent = fallback.clone();
+                                let default_agent = self.default_agent.clone();
+                                for tab in &mut self.tabs {
+                                    Self::ensure_tab_agent(&default_agent, tab, &filtered);
+                                }
                             }
                         });
 
@@ -2246,6 +2380,64 @@ impl eframe::App for OpenCodeApp {
             }
         }
 
+        let filtered_agents = Self::filtered_agents(self.show_subagents, &self.agents);
+        let has_agents = !self.agents.is_empty();
+        if !self.tabs.is_empty() && has_agents {
+            egui::SidePanel::left("agents_pane").show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.heading("Agents");
+                    if ui
+                        .small_button(if self.agents_pane_collapsed { "▸" } else { "▾" })
+                        .clicked()
+                    {
+                        self.agents_pane_collapsed = !self.agents_pane_collapsed;
+                    }
+                });
+
+                if self.agents_pane_collapsed {
+                    return;
+                }
+
+                if filtered_agents.is_empty() {
+                    ui.label("No primary agents. Enable subagents in Settings.");
+                    return;
+                }
+
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    for agent in &filtered_agents {
+                        let is_selected = tab
+                            .selected_agent
+                            .as_deref()
+                            .map(|name| name == agent.name.as_str())
+                            .unwrap_or(false);
+                        let is_sub = agent.mode.as_deref() == Some("subagent");
+                        let mut label_text = egui::RichText::new(&agent.name);
+                        if is_sub {
+                            label_text = label_text.color(egui::Color32::from_gray(150));
+                        }
+                        ui.horizontal(|ui| {
+                            let response = ui.selectable_label(is_selected, label_text);
+                            if let Some(color_hex) = &agent.color {
+                                if let Some(color) = Self::agent_color(color_hex) {
+                                    ui.colored_label(color, "⬤");
+                                }
+                            }
+                            if agent.built_in {
+                                ui.small("built-in");
+                            }
+                            if is_sub {
+                                ui.small("subagent");
+                            }
+                            if response.clicked() {
+                                tab.selected_agent = Some(agent.name.clone());
+                                dbg_log(&format!("agent selected: {}", agent.name));
+                            }
+                        });
+                    }
+                }
+            });
+        }
+
         // Bottom: Input area
         egui::TopBottomPanel::bottom("input_panel").show(ctx, |ui| {
             if !self.tabs.is_empty() {
@@ -2300,12 +2492,18 @@ impl eframe::App for OpenCodeApp {
 
                                         let text = tab.input.clone();
                                         let model = tab.selected_model.clone();
+                                        let agent = tab
+                                            .selected_agent
+                                            .clone()
+                                            .unwrap_or_else(|| self.default_agent.clone());
                                         tab.input.clear();
                                         let c = client.clone();
                                         let sid = sid.clone();
                                         if let Some(rt) = &self.runtime {
                                             rt.spawn(async move {
-                                                let _ = c.send_message(&sid, &text, model).await;
+                                                let _ = c
+                                                    .send_message(&sid, &text, model, Some(agent))
+                                                    .await;
                                             });
                                         }
                                     }
@@ -2357,16 +2555,23 @@ impl eframe::App for OpenCodeApp {
                                         Err(_) => 0,
                                     };
 
-                                    let text = tab.input.clone();
-                                    let model = tab.selected_model.clone();
-                                    tab.input.clear();
-                                    let c = client.clone();
-                                    let sid = sid.clone();
-                                    if let Some(rt) = &self.runtime {
-                                        rt.spawn(async move {
-                                            let _ = c.send_message(&sid, &text, model).await;
-                                        });
-                                    }
+                                     let text = tab.input.clone();
+                                     let model = tab.selected_model.clone();
+                                     let agent = tab
+                                         .selected_agent
+                                         .clone()
+                                         .unwrap_or_else(|| self.default_agent.clone());
+                                     tab.input.clear();
+                                     let c = client.clone();
+                                     let sid = sid.clone();
+                                     if let Some(rt) = &self.runtime {
+                                         rt.spawn(async move {
+                                             let _ = c
+                                                 .send_message(&sid, &text, model, Some(agent))
+                                                 .await;
+                                         });
+                                     }
+
                                 }
                             }
                             if !has_session {
@@ -2428,7 +2633,7 @@ impl eframe::App for OpenCodeApp {
                             let spacing = self.config.ui.chat_density.message_spacing();
                             let (session_id_opt, messages_copy) =
                                 (tab.session_id.clone(), tab.messages.clone());
-                            drop(tab);
+                            let _ = tab;
                             for msg in &messages_copy {
                                 self.render_message(ui, msg, session_id_opt.as_deref());
                                 ui.add_space(spacing);

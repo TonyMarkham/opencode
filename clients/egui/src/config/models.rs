@@ -5,9 +5,11 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ModelConfigError {
+    #[allow(dead_code)]
     #[error("Failed to read models.toml: {0}")]
     Read(String),
 
+    #[allow(dead_code)]
     #[error("Failed to parse models.toml: {0}")]
     Parse(String),
 
@@ -186,6 +188,7 @@ impl ModelsConfig {
     }
 
     /// Get provider configuration by name
+    #[allow(dead_code)]
     pub fn get_provider(&self, name: &str) -> Option<&ProviderConfig> {
         self.providers.iter().find(|p| p.name == name)
     }

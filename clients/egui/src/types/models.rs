@@ -123,6 +123,8 @@ pub struct MessageRequest {
     pub parts: Vec<MessagePart>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<ModelIdentifier>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

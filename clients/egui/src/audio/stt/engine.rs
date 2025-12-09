@@ -4,6 +4,7 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 
 pub struct SttEngine {
     whisper_ctx: WhisperContext,
+    #[allow(dead_code)]
     model_path: PathBuf,
 }
 

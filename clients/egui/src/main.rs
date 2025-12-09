@@ -9,6 +9,9 @@ pub mod error; // contains api, events, discovery, spawn submodules
 pub mod startup;
 pub mod types;
 
+#[cfg(test)]
+mod tests;
+
 use eframe::egui;
 
 fn main() -> eframe::Result {

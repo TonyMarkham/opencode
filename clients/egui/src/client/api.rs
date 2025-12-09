@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::error::api::ApiError;
+use crate::types::agent::AgentInfo;
 use crate::types::models::{MessagePart, MessageRequest, ModelIdentifier};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -85,6 +86,23 @@ impl OpencodeClient {
         Ok(data)
     }
 
+    pub async fn list_agents(&self) -> Result<Vec<AgentInfo>, ApiError> {
+        let url = self
+            .base
+            .join("agent")
+            .map_err(|e| ApiError::Url(e.to_string()))?;
+        let resp = self
+            .with_dir(self.http.get(url))
+            .send()
+            .await
+            .map_err(|e| ApiError::Http(e.to_string()))?;
+        let data = resp
+            .json::<Vec<AgentInfo>>()
+            .await
+            .map_err(|e| ApiError::Decode(e.to_string()))?;
+        Ok(data)
+    }
+
     pub async fn create_session(&self, title: Option<&str>) -> Result<SessionInfo, ApiError> {
         let url = self
             .base
@@ -124,6 +142,7 @@ impl OpencodeClient {
         session_id: &str,
         text: &str,
         model: Option<(String, String)>,
+        agent: Option<String>,
     ) -> Result<(), ApiError> {
         let url = self
             .base
@@ -136,6 +155,7 @@ impl OpencodeClient {
                 text: text.to_string(),
             }],
             model: model.map(|(provider_id, model_id)| ModelIdentifier::new(provider_id, model_id)),
+            agent: agent.clone(),
         };
 
         let resp = self
