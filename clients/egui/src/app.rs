@@ -2546,9 +2546,20 @@ impl eframe::App for OpenCodeApp {
             });
         }
 
-        // Bottom: Input area
-        egui::TopBottomPanel::bottom("input_panel").show(ctx, |ui| {
-            if !self.tabs.is_empty() {
+        // Bottom: Input area (resizable split pane)
+        egui::TopBottomPanel::bottom("input_panel")
+            .resizable(true)
+            .min_height(72.0)
+            .default_height(72.0)
+            .show(ctx, |ui| {
+                ui.set_min_height(72.0);
+                ui.take_available_height();
+
+
+                if self.tabs.is_empty() {
+                    return;
+                }
+
                 if let Some(tab) = self.tabs.get_mut(self.active) {
                     let has_session = tab.session_id.is_some();
                     let session_id = tab.session_id.clone();
@@ -2562,219 +2573,307 @@ impl eframe::App for OpenCodeApp {
                         .is_some();
                     let streaming = tab.active_assistant.is_some();
 
-                    ui.horizontal(|ui| {
-                        // Text input
-                        let text_height = ui.text_style_height(&egui::TextStyle::Body) * 3.0;
-                        let available_width = ui.available_width() - 200.0; // Leave room for button
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                        let panel_height = ui.available_height();
+                        let side_width = 200.0;
+                        let side_size = egui::vec2(side_width, panel_height);
 
-                        egui::ScrollArea::vertical()
-                            .max_height(text_height * 3.0)
-                            .show(ui, |ui| {
-                                if !tab.pending_attachments.is_empty() {
-                                    ui.horizontal(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 4.0;
-                                        let mut remove_idx = None;
-                                        for (idx, _att) in tab.pending_attachments.iter().enumerate() {
-                                            ui.group(|ui| {
-                                                ui.horizontal(|ui| {
-                                                    ui.label("📎 Image");
-                                                    if ui.small_button("✖").clicked() {
-                                                        remove_idx = Some(idx);
+                        // Left column: attachments panel
+                        ui.allocate_ui(side_size, |ui| {
+                            ui.vertical(|ui| {
+                                if ui.button("📋 Paste Image").clicked() {
+                                    if let Some(tx) = self.ui_tx.clone() {
+                                        let egui_ctx = ctx.clone();
+                                        std::thread::spawn(move || {
+                                            if let Ok(mut cb) = arboard::Clipboard::new() {
+                                                if let Ok(img) = cb.get_image() {
+                                                    let w = img.width as u32;
+                                                    let h = img.height as u32;
+                                                    let mut png_data = Vec::new();
+                                                    let encoder = PngEncoder::new(&mut png_data);
+                                                    let color_type = ExtendedColorType::Rgba8;
+                                                    if encoder
+                                                        .write_image(
+                                                            &img.bytes,
+                                                            w,
+                                                            h,
+                                                            color_type,
+                                                        )
+                                                        .is_ok()
+                                                    {
+                                                        let _ = tx.send(UiMsg::AttachmentAdded(
+                                                            png_data,
+                                                            "image/png".to_string(),
+                                                        ));
+                                                        egui_ctx.request_repaint();
                                                     }
-                                                });
-                                            });
-                                        }
-                                        if let Some(idx) = remove_idx {
-                                            tab.pending_attachments.remove(idx);
-                                        }
-                                    });
-                                }
-
-                                let _response = ui.add_enabled(
-                                    has_session && !blocked,
-                                    egui::TextEdit::multiline(&mut tab.input)
-                                        .desired_width(available_width)
-                                        .desired_rows(3),
-                                );
-
-                                // Send on Cmd+Enter (macOS)
-                                let send_key = ui.input(|i| {
-                                    i.modifiers.command && i.key_pressed(egui::Key::Enter)
-                                });
-
-                                let send_enabled = has_session
-                                    && !blocked
-                                    && !streaming
-                                    && (!tab.input.trim().is_empty()
-                                        || !tab.pending_attachments.is_empty());
-                                if send_key && send_enabled {
-                                    if let (Some(client), Some(sid)) =
-                                        (&self.client, &tab.session_id)
-                                    {
-                                        tab.suppress_incoming = false;
-                                        tab.last_send_at = match SystemTime::now()
-                                            .duration_since(UNIX_EPOCH)
-                                        {
-                                            Ok(dur) => dur.as_millis() as i64,
-                                            Err(_) => 0,
-                                        };
-
-                                        let text = tab.input.clone();
-                                        let model = tab.selected_model.clone();
-                                        let agent = tab
-                                            .selected_agent
-                                            .clone()
-                                            .unwrap_or_else(|| self.default_agent.clone());
-                                        tab.input.clear();
-                                        let mut parts = Vec::new();
-                                        if !text.is_empty() {
-                                            parts.push(crate::types::models::MessagePart::Text { text });
-                                        }
-                                        for att in &tab.pending_attachments {
-                                            let b64 = base64::engine::general_purpose::STANDARD
-                                                .encode(&att.data);
-                                            parts.push(crate::types::models::MessagePart::File {
-                                                mime: att.mime.clone(),
-                                                filename: None,
-                                                url: format!("data:{};base64,{}", att.mime, b64),
-                                            });
-                                        }
-                                        tab.pending_attachments.clear();
-                                        let c = client.clone();
-                                        let sid = sid.clone();
-                                        if let Some(rt) = &self.runtime {
-                                            rt.spawn(async move {
-                                                let _ = c
-                                                    .send_message(&sid, parts, model, Some(agent))
-                                                    .await;
-                                            });
-                                        }
+                                                }
+                                            }
+                                        });
                                     }
                                 }
 
-
+                                let scroll_height = ui.available_height();
+                                egui::ScrollArea::vertical()
+                                    .max_height(scroll_height)
+                                    .show(ui, |ui| {
+                                        if !tab.pending_attachments.is_empty() {
+                                            ui.spacing_mut().item_spacing.x = 4.0;
+                                            let mut remove_idx = None;
+                                            for (idx, _att) in
+                                                tab.pending_attachments.iter().enumerate()
+                                            {
+                                                ui.group(|ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label("📎 Image");
+                                                        if ui.small_button("✖").clicked() {
+                                                            remove_idx = Some(idx);
+                                                        }
+                                                    });
+                                                });
+                                            }
+                                            if let Some(idx) = remove_idx {
+                                                tab.pending_attachments.remove(idx);
+                                            }
+                                        }
+                                    });
                             });
+                        });
 
-                        // Send / Stop controls and hint
-                        ui.vertical(|ui| {
-                            if ui.button("📋 Paste Image").clicked() {
-                                if let Some(tx) = self.ui_tx.clone() {
-                                    let egui_ctx = ctx.clone();
-                                    std::thread::spawn(move || {
-                                        if let Ok(mut cb) = arboard::Clipboard::new() {
-                                            if let Ok(img) = cb.get_image() {
-                                                let w = img.width as u32;
-                                                let h = img.height as u32;
-                                                let mut png_data = Vec::new();
-                                                let encoder = PngEncoder::new(&mut png_data);
-                                                let color_type = ExtendedColorType::Rgba8;
-                                                if encoder
-                                                    .write_image(&img.bytes, w, h, color_type)
-                                                    .is_ok()
+                        // Remaining area: center (prompt) + right (actions)
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::TOP),
+                            |ui| {
+                                let panel_height = ui.available_height();
+                                let side_width = 200.0;
+                                let side_size = egui::vec2(side_width, panel_height);
+
+                                // Right column: actions panel
+                                ui.allocate_ui(side_size, |ui| {
+                                    ui.vertical(|ui| {
+                                        if streaming {
+                                            if ui
+                                                .add_enabled(
+                                                    has_session,
+                                                    egui::Button::new("Stop"),
+                                                )
+                                                .clicked()
+                                            {
+                                                let sid_clone = tab.session_id.clone();
+
+                                                if let (Some(client), Some(sid)) =
+                                                    (&self.client, sid_clone)
                                                 {
-                                                    let _ = tx.send(UiMsg::AttachmentAdded(
-                                                        png_data,
-                                                        "image/png".to_string(),
-                                                    ));
-                                                    egui_ctx.request_repaint();
+                                                    Self::cancel_active_response(tab);
+                                                    let c = client.clone();
+                                                    let sid_for_abort = sid.clone();
+                                                    if let Some(rt) = &self.runtime {
+                                                        rt.spawn(async move {
+                                                            let _ = c
+                                                                .abort_session(&sid_for_abort)
+                                                                .await;
+                                                            tokio::time::sleep(
+                                                                std::time::Duration::from_millis(
+                                                                    200,
+                                                                ),
+                                                            )
+                                                            .await;
+                                                            let _ = c
+                                                                .abort_session(&sid_for_abort)
+                                                                .await;
+                                                        });
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        let send_enabled = has_session
+                                            && !blocked
+                                            && !streaming
+                                            && (!tab.input.trim().is_empty()
+                                                || !tab.pending_attachments.is_empty());
+                                        if ui
+                                            .add_enabled(
+                                                send_enabled,
+                                                egui::Button::new("Send"),
+                                            )
+                                            .clicked()
+                                        {
+                                            if let (Some(client), Some(sid)) =
+                                                (&self.client, &tab.session_id)
+                                            {
+                                                tab.suppress_incoming = false;
+                                                tab.last_send_at =
+                                                    match SystemTime::now().duration_since(
+                                                        UNIX_EPOCH,
+                                                    ) {
+                                                        Ok(dur) => dur.as_millis() as i64,
+                                                        Err(_) => 0,
+                                                    };
+
+                                                let text = tab.input.clone();
+                                                let model = tab.selected_model.clone();
+                                                let agent = tab
+                                                    .selected_agent
+                                                    .clone()
+                                                    .unwrap_or_else(|| {
+                                                        self.default_agent.clone()
+                                                    });
+                                                tab.input.clear();
+                                                let mut parts = Vec::new();
+                                                if !text.is_empty() {
+                                                    parts.push(
+                                                        crate::types::models::MessagePart::Text {
+                                                            text,
+                                                        },
+                                                    );
+                                                }
+                                                for att in &tab.pending_attachments {
+                                                    let b64 = base64::engine::general_purpose::STANDARD
+                                                        .encode(&att.data);
+                                                    parts.push(
+                                                        crate::types::models::MessagePart::File {
+                                                            mime: att.mime.clone(),
+                                                            filename: None,
+                                                            url: format!(
+                                                                "data:{};base64,{}",
+                                                                att.mime, b64
+                                                            ),
+                                                        },
+                                                    );
+                                                }
+                                                tab.pending_attachments.clear();
+                                                let c = client.clone();
+                                                let sid = sid.clone();
+                                                if let Some(rt) = &self.runtime {
+                                                    rt.spawn(async move {
+                                                        let _ = c
+                                                            .send_message(
+                                                                &sid,
+                                                                parts,
+                                                                model,
+                                                                Some(agent),
+                                                            )
+                                                            .await;
+                                                    });
+                                                }
+                                            }
+                                        }
+
+                                        if !has_session {
+                                            ui.small("(Wait...)");
+                                        }
+                                        if has_session && streaming {
+                                            ui.small("Stop to cancel response");
+                                        }
+                                        if has_session && !blocked && !streaming {
+                                            if self.audio_tx.is_some() {
+                                                ui.small("⌘+Enter\nAltRight: Record");
+                                            } else {
+                                                ui.small("⌘+Enter");
+                                            }
+                                        }
+                                    });
+                                });
+
+                                // Center column: prompt input
+                                let center_height = ui.available_height();
+                                let center_width = ui.available_width();
+                                let text_height = center_height;
+                                let row_height =
+                                    ui.text_style_height(&egui::TextStyle::Body);
+                                let rows = (text_height / row_height)
+                                    .floor()
+                                    .max(3.0) as usize;
+
+                                egui::ScrollArea::vertical()
+                                    .max_height(text_height)
+                                    .show(ui, |ui| {
+                                        let _response = ui.add_enabled(
+                                            has_session && !blocked,
+                                            egui::TextEdit::multiline(&mut tab.input)
+                                                .desired_width(center_width)
+                                                .desired_rows(rows),
+                                        );
+
+                                        // Send on Cmd+Enter (macOS)
+                                        let send_key = ui.input(|i| {
+                                            i.modifiers.command
+                                                && i.key_pressed(egui::Key::Enter)
+                                        });
+
+                                        let send_enabled = has_session
+                                            && !blocked
+                                            && !streaming
+                                            && (!tab.input.trim().is_empty()
+                                                || !tab.pending_attachments.is_empty());
+                                        if send_key && send_enabled {
+                                            if let (Some(client), Some(sid)) =
+                                                (&self.client, &tab.session_id)
+                                            {
+                                                tab.suppress_incoming = false;
+                                                tab.last_send_at =
+                                                    match SystemTime::now().duration_since(
+                                                        UNIX_EPOCH,
+                                                    ) {
+                                                        Ok(dur) => dur.as_millis() as i64,
+                                                        Err(_) => 0,
+                                                    };
+
+                                                let text = tab.input.clone();
+                                                let model = tab.selected_model.clone();
+                                                let agent = tab
+                                                    .selected_agent
+                                                    .clone()
+                                                    .unwrap_or_else(|| {
+                                                        self.default_agent.clone()
+                                                    });
+                                                tab.input.clear();
+                                                let mut parts = Vec::new();
+                                                if !text.is_empty() {
+                                                    parts.push(
+                                                        crate::types::models::MessagePart::Text {
+                                                            text,
+                                                        },
+                                                    );
+                                                }
+                                                for att in &tab.pending_attachments {
+                                                    let b64 = base64::engine::general_purpose::STANDARD
+                                                        .encode(&att.data);
+                                                    parts.push(
+                                                        crate::types::models::MessagePart::File {
+                                                            mime: att.mime.clone(),
+                                                            filename: None,
+                                                            url: format!(
+                                                                "data:{};base64,{}",
+                                                                att.mime, b64
+                                                            ),
+                                                        },
+                                                    );
+                                                }
+                                                tab.pending_attachments.clear();
+                                                let c = client.clone();
+                                                let sid = sid.clone();
+                                                if let Some(rt) = &self.runtime {
+                                                    rt.spawn(async move {
+                                                        let _ = c
+                                                            .send_message(
+                                                                &sid,
+                                                                parts,
+                                                                model,
+                                                                Some(agent),
+                                                            )
+                                                            .await;
+                                                    });
                                                 }
                                             }
                                         }
                                     });
-                                }
-                            }
-
-                            if streaming {
-                                if ui
-                                    .add_enabled(has_session, egui::Button::new("Stop"))
-                                    .clicked()
-                                {
-                                    let sid_clone = tab.session_id.clone();
-
-                                    if let (Some(client), Some(sid)) = (&self.client, sid_clone) {
-                                        Self::cancel_active_response(tab);
-                                        let c = client.clone();
-                                        let sid_for_abort = sid.clone();
-                                        if let Some(rt) = &self.runtime {
-                                            rt.spawn(async move {
-                                                let _ = c.abort_session(&sid_for_abort).await;
-                                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                                                let _ = c.abort_session(&sid_for_abort).await;
-                                            });
-                                        }
-                                    }
-                                }
-                            }
-
-                            let send_enabled = has_session
-                                && !blocked
-                                && !streaming
-                                && (!tab.input.trim().is_empty()
-                                    || !tab.pending_attachments.is_empty());
-                            if ui
-                                .add_enabled(send_enabled, egui::Button::new("Send"))
-                                .clicked()
-                            {
-                                if let (Some(client), Some(sid)) = (&self.client, &tab.session_id) {
-                                    tab.suppress_incoming = false;
-                                    tab.last_send_at = match SystemTime::now()
-                                        .duration_since(UNIX_EPOCH)
-                                    {
-                                        Ok(dur) => dur.as_millis() as i64,
-                                        Err(_) => 0,
-                                    };
-
-                                     let text = tab.input.clone();
-                                     let model = tab.selected_model.clone();
-                                     let agent = tab
-                                         .selected_agent
-                                         .clone()
-                                         .unwrap_or_else(|| self.default_agent.clone());
-                                     tab.input.clear();
-                                     let mut parts = Vec::new();
-                                     if !text.is_empty() {
-                                         parts.push(crate::types::models::MessagePart::Text { text });
-                                     }
-                                     for att in &tab.pending_attachments {
-                                         let b64 = base64::engine::general_purpose::STANDARD
-                                             .encode(&att.data);
-                                         parts.push(crate::types::models::MessagePart::File {
-                                             mime: att.mime.clone(),
-                                             filename: None,
-                                             url: format!("data:{};base64,{}", att.mime, b64),
-                                         });
-                                     }
-                                     tab.pending_attachments.clear();
-                                     let c = client.clone();
-                                     let sid = sid.clone();
-                                     if let Some(rt) = &self.runtime {
-                                         rt.spawn(async move {
-                                             let _ = c
-                                                 .send_message(&sid, parts, model, Some(agent))
-                                                 .await;
-                                         });
-                                     }
-
-                                }
-                            }
-                            if !has_session {
-                                ui.small("(Wait...)");
-                            }
-                            if has_session && streaming {
-                                ui.small("Stop to cancel response");
-                            }
-                            if has_session && !blocked && !streaming {
-                                if self.audio_tx.is_some() {
-                                    ui.small("⌘+Enter\nAltRight: Record");
-                                } else {
-                                    ui.small("⌘+Enter");
-                                }
-                            }
-                        });
+                            },
+                        );
                     });
                 }
-            }
-        });
+            });
 
         // Center: Chat UI with messages
         egui::CentralPanel::default().show(ctx, |ui| {
