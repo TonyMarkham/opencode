@@ -1698,7 +1698,6 @@ impl eframe::App for OpenCodeApp {
                 let mut rename_action: Option<(usize, String)> = None;
                 let mut cancel_rename = false;
 
-                let mut model_changed: Option<(usize, Option<(String, String)>)> = None;
                 for (i, tab) in self.tabs.iter().enumerate() {
                     let selected = self.active == i;
 
@@ -1766,94 +1765,6 @@ impl eframe::App for OpenCodeApp {
                                 });
                             }
 
-                            // Model selector dropdown
-                            if !self.models_config.get_curated_models().is_empty() {
-                                ui.separator();
-
-                                // Display current model or default
-                                let current_display =
-                                    if let Some((provider, model_id)) = &tab.selected_model {
-                                        // Find model name from curated list
-                                        self.models_config
-                                            .get_curated_models()
-                                            .iter()
-                                            .find(|m| {
-                                                &m.provider == provider && &m.model_id == model_id
-                                            })
-                                            .map(|m| m.name.clone())
-                                            .unwrap_or_else(|| format!("{provider}/{model_id}"))
-                                    } else {
-                                        match &self.auth_sync_state.status {
-                                            crate::startup::auth::AuthSyncStatus::InProgress => {
-                                                "⏳".to_string()
-                                            }
-                                            crate::startup::auth::AuthSyncStatus::Complete => {
-                                                "(default)".to_string()
-                                            }
-                                            crate::startup::auth::AuthSyncStatus::Failed(_) => {
-                                                "❌".to_string()
-                                            }
-                                            _ => "...".to_string(),
-                                        }
-                                    };
-
-                                egui::ComboBox::from_id_salt(format!("model_selector_{i}"))
-                                    .selected_text(current_display)
-                                    .width(120.0)
-                                    .show_ui(ui, |ui| {
-                                        // Option to use default model
-                                        if ui
-                                            .selectable_label(
-                                                tab.selected_model.is_none(),
-                                                "(use default)",
-                                            )
-                                            .clicked()
-                                        {
-                                            model_changed = Some((i, None));
-                                        }
-
-                                        ui.separator();
-
-                                        // Show curated models
-                                        for model in self.models_config.get_curated_models() {
-                                            let is_selected = tab
-                                                .selected_model
-                                                .as_ref()
-                                                .map(|(p, m)| {
-                                                    p == &model.provider && m == &model.model_id
-                                                })
-                                                .unwrap_or(false);
-
-                                            if ui
-                                                .selectable_label(is_selected, &model.name)
-                                                .clicked()
-                                            {
-                                                model_changed = Some((
-                                                    i,
-                                                    Some((
-                                                        model.provider.clone(),
-                                                        model.model_id.clone(),
-                                                    )),
-                                                ));
-                                            }
-                                        }
-
-                                        ui.separator();
-
-                                        // Link to manage models
-                                        if ui.small_button("⚙ Manage Models").clicked() {
-                                            self.show_settings = true;
-                                            ui.close();
-                                        }
-                                    });
-                            }
-
-                            let agent_display = tab
-                                .selected_agent
-                                .as_deref()
-                                .unwrap_or(self.default_agent.as_str());
-                            ui.small(format!("agent: {agent_display}"));
-
                             if ui.small_button("X").clicked() {
                                 to_close = Some(i);
                             }
@@ -1862,11 +1773,6 @@ impl eframe::App for OpenCodeApp {
                 }
 
                 // Apply deferred actions
-                if let Some((idx, model)) = model_changed {
-                    if let Some(tab) = self.tabs.get_mut(idx) {
-                        tab.selected_model = model;
-                    }
-                }
                 if let Some((idx, new_title)) = rename_action {
                     if let Some(tab) = self.tabs.get_mut(idx) {
                         tab.title = new_title;
@@ -1937,21 +1843,6 @@ impl eframe::App for OpenCodeApp {
                     }
                 }
 
-                ui.separator();
-
-                // Server status (minimal)
-                if let Some(info) = &self.server {
-                    ui.label(format!("Server: {} (PID {})", info.base_url, info.pid));
-                } else if self.server_in_flight {
-                    ui.label("Server: connecting…");
-                } else {
-                    ui.label("Server: not connected");
-                }
-
-                // Settings button
-                if ui.button("⚙ Settings").clicked() {
-                    self.show_settings = !self.show_settings;
-                }
             });
         });
 
@@ -2498,6 +2389,135 @@ impl eframe::App for OpenCodeApp {
 
         let filtered_agents = Self::filtered_agents(self.show_subagents, &self.agents);
         let has_agents = !self.agents.is_empty();
+
+        // Global footer: spans full width under agents and chat
+        egui::TopBottomPanel::bottom("footer_panel")
+            .resizable(false)
+            .min_height(24.0)
+            .default_height(28.0)
+            .show(ctx, |ui| {
+                ui.set_min_height(24.0);
+
+                if self.tabs.is_empty() {
+                    return;
+                }
+
+                if let Some(tab) = self.tabs.get_mut(self.active) {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 8.0;
+
+                        // Left side: model selector and active agent label
+                        ui.with_layout(
+                            egui::Layout::left_to_right(egui::Align::Center),
+                            |ui| {
+                                if !self.models_config.get_curated_models().is_empty() {
+                                    let current_display = if let Some((provider, model_id)) = &tab.selected_model {
+                                        self.models_config
+                                            .get_curated_models()
+                                            .iter()
+                                            .find(|m| &m.provider == provider && &m.model_id == model_id)
+                                            .map(|m| m.name.clone())
+                                            .unwrap_or_else(|| format!("{provider}/{model_id}"))
+                                    } else {
+                                        match &self.auth_sync_state.status {
+                                            crate::startup::auth::AuthSyncStatus::InProgress => "\u{23F3}".to_string(),
+                                            crate::startup::auth::AuthSyncStatus::Complete => "(default)".to_string(),
+                                            crate::startup::auth::AuthSyncStatus::Failed(_) => "\u{274C}".to_string(),
+                                            _ => "...".to_string(),
+                                        }
+                                    };
+
+                                    egui::ComboBox::from_id_salt("footer_model_selector")
+                                        .selected_text(current_display)
+                                        .width(160.0)
+                                        .show_ui(ui, |ui| {
+                                            if ui
+                                                .selectable_label(
+                                                    tab.selected_model.is_none(),
+                                                    "(use default)",
+                                                )
+                                                .clicked()
+                                            {
+                                                tab.selected_model = None;
+                                            }
+
+                                            ui.separator();
+
+                                            for model in self.models_config.get_curated_models() {
+                                                let is_selected = tab
+                                                    .selected_model
+                                                    .as_ref()
+                                                    .map(|(p, m)| {
+                                                        p == &model.provider && m == &model.model_id
+                                                    })
+                                                    .unwrap_or(false);
+
+                                                if ui
+                                                    .selectable_label(is_selected, &model.name)
+                                                    .clicked()
+                                                {
+                                                    tab.selected_model = Some((
+                                                        model.provider.clone(),
+                                                        model.model_id.clone(),
+                                                    ));
+                                                }
+                                            }
+
+                                            ui.separator();
+
+                                            if ui.small_button("\u{2699} Manage Models").clicked() {
+                                                self.show_settings = true;
+                                                ui.close();
+                                            }
+                                        });
+                                }
+
+                                let agent_display = tab
+                                    .selected_agent
+                                    .as_deref()
+                                    .unwrap_or(self.default_agent.as_str());
+                                ui.small(format!("agent: {agent_display}"));
+
+                                let current_dir: Option<&str> = if let Some(override_dir) =
+                                    self.config.server.directory_override.as_deref()
+                                {
+                                    Some(override_dir)
+                                } else {
+                                    tab.directory.as_deref()
+                                };
+                                if let Some(dir) = current_dir {
+                                    ui.separator();
+                                    ui.small("CWD");
+                                    ui.separator();
+                                    ui.small(dir);
+                                }
+                            },
+                        );
+
+                        // Right side: server status and settings button
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui.button("\u{2699} Settings").clicked() {
+                                    self.show_settings = !self.show_settings;
+                                }
+
+                                if let Some(info) = &self.server {
+                                    ui.small(format!(
+                                        "Server: {} (PID {})",
+                                        info.base_url, info.pid
+                                    ));
+                                } else if self.server_in_flight {
+                                    ui.small("Server: connecting…");
+                                } else {
+                                    ui.small("Server: not connected");
+                                }
+                            },
+                        );
+                    });
+                }
+            });
+
         if !self.tabs.is_empty() && has_agents {
             egui::SidePanel::left("agents_pane").show(ctx, |ui| {
                 ui.horizontal(|ui| {
@@ -2886,28 +2906,6 @@ impl eframe::App for OpenCodeApp {
         // Center: Chat UI with messages
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical(|ui| {
-                // Header
-                ui.horizontal(|ui| {
-                    ui.heading("OpenCode EGUI (M4)");
-                    if let Some(info) = &self.server {
-                        ui.label(format!("| {} (PID {})", info.base_url, info.pid));
-                    }
-                    // Show current directory context: override > active tab's session directory
-                    let current_dir: Option<&str> = if let Some(override_dir) =
-                        self.config.server.directory_override.as_deref()
-                    {
-                        Some(override_dir)
-                    } else if let Some(tab) = self.tabs.get(self.active) {
-                        tab.directory.as_deref()
-                    } else {
-                        None
-                    };
-                    if let Some(dir) = current_dir {
-                        ui.label(format!("| Dir: {}", dir));
-                    }
-                });
-                ui.separator();
-
                 // Messages area
                 egui::ScrollArea::vertical()
                     .stick_to_bottom(true)
