@@ -144,6 +144,7 @@ enum UiMsg {
 struct PermissionInfo {
     id: String,
     #[serde(rename = "type")]
+    #[allow(dead_code)]
     perm_type: String,
     #[allow(dead_code)]
     pattern: Option<Vec<String>>,
@@ -153,6 +154,7 @@ struct PermissionInfo {
     message_id: String,
     #[serde(rename = "callID")]
     call_id: Option<String>,
+    #[allow(dead_code)]
     title: String,
     #[allow(dead_code)]
     metadata: serde_json::Value,
@@ -904,6 +906,7 @@ impl OpenCodeApp {
                                 .and_then(|v| v.as_i64());
                             let input = part
                                 .get("input")
+                                .or_else(|| state.and_then(|s| s.get("input")))
                                 .cloned()
                                 .unwrap_or(serde_json::Value::Null);
 
@@ -1040,7 +1043,7 @@ impl OpenCodeApp {
         msg: &DisplayMessage,
         session_id: Option<&str>,
     ) {
-        let message_id = msg.message_id.clone();
+        let _message_id = msg.message_id.clone();
         let available_width = ui.available_width();
         let bubble_max_width = available_width * 0.75;
 
@@ -1062,7 +1065,7 @@ impl OpenCodeApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                     egui::Frame::new()
                         .fill(bg_color)
-                        .corner_radius(10.0)
+                        .corner_radius(10)
                         .inner_margin(12.0)
                         .show(ui, |ui| {
                             ui.set_max_width(bubble_max_width);
@@ -1085,7 +1088,7 @@ impl OpenCodeApp {
                 // Assistant/system messages: left-aligned
                 egui::Frame::new()
                     .fill(bg_color)
-                    .corner_radius(10.0)
+                    .corner_radius(10)
                     .inner_margin(12.0)
                     .show(ui, |ui| {
                         ui.set_max_width(bubble_max_width);
@@ -1112,131 +1115,9 @@ impl OpenCodeApp {
                         // Tool calls (collapsible)
                         if !msg.tool_calls.is_empty() {
                             ui.add_space(8.0);
-
-                            let any_in_progress = msg.tool_calls.iter().any(|t| {
-                                t.status != "success"
-                                    && t.status != "error"
-                                    && t.status != "completed"
-                                    && t.status != "cancelled"
-                            });
-
-                            let has_pending_perm = session_id.is_some()
-                                && msg.tool_calls.iter().any(|tool| {
-                                    if let Some(call_id) = &tool.call_id {
-                                        return self.pending_permissions.iter().any(|p| {
-                                            p.session_id == session_id.unwrap()
-                                                && p.call_id.as_deref() == Some(call_id.as_str())
-                                        });
-                                    }
-                                    false
-                                });
-
-                            ui.horizontal(|ui| {
-                                if any_in_progress {
-                                    ui.spinner();
-                                }
-                                let header_text =
-                                    format!("🔧 {} tool call(s)", msg.tool_calls.len());
-                                egui::CollapsingHeader::new(header_text)
-                                    .id_salt(&message_id)
-                                    .default_open(has_pending_perm)
-                                    .show(ui, |ui| {
-                                        for tool in &msg.tool_calls {
-                                            self.render_tool_call_detail(ui, tool);
-
-                                            if let (Some(sid), Some(call)) =
-                                                (session_id, &tool.call_id)
-                                            {
-                                                let perm_opt = self
-                                                    .pending_permissions
-                                                    .iter()
-                                                    .find(|p| {
-                                                        p.session_id == sid
-                                                            && p.call_id.as_deref()
-                                                                == Some(call.as_str())
-                                                    })
-                                                    .cloned();
-                                                if let Some(perm) = perm_opt {
-                                                    ui.add_space(4.0);
-                                                    egui::Frame::default()
-                                                        .fill(egui::Color32::from_gray(40))
-                                                        .inner_margin(egui::Margin::symmetric(8i8, 6i8))
-                                                        .show(ui, |ui| {
-                                                            ui.label(format!(
-                                                                "Permission required: {}",
-                                                                perm.title
-                                                            ));
-                                                            ui.small(format!(
-                                                                "Type: {}",
-                                                                perm.perm_type
-                                                            ));
-                                                            ui.add_space(6.0);
-                                                            ui.horizontal(|ui| {
-                                                                if ui.button("❌ Reject").clicked()
-                                                                {
-                                                                    self.action_respond_permission(
-                                                                        perm.session_id.clone(),
-                                                                        perm.id.clone(),
-                                                                        "reject",
-                                                                    );
-                                                                    if let Some(idx) = self
-                                                                        .pending_permissions
-                                                                        .iter()
-                                                                        .position(|p| {
-                                                                            p.id == perm.id
-                                                                        })
-                                                                    {
-                                                                        self.pending_permissions
-                                                                            .remove(idx);
-                                                                    }
-                                                                }
-                                                                if ui
-                                                                    .button("✅ Allow Once")
-                                                                    .clicked()
-                                                                {
-                                                                    self.action_respond_permission(
-                                                                        perm.session_id.clone(),
-                                                                        perm.id.clone(),
-                                                                        "once",
-                                                                    );
-                                                                    if let Some(idx) = self
-                                                                        .pending_permissions
-                                                                        .iter()
-                                                                        .position(|p| {
-                                                                            p.id == perm.id
-                                                                        })
-                                                                    {
-                                                                        self.pending_permissions
-                                                                            .remove(idx);
-                                                                    }
-                                                                }
-                                                                if ui
-                                                                    .button("✅ Always Allow")
-                                                                    .clicked()
-                                                                {
-                                                                    self.action_respond_permission(
-                                                                        perm.session_id.clone(),
-                                                                        perm.id.clone(),
-                                                                        "always",
-                                                                    );
-                                                                    if let Some(idx) = self
-                                                                        .pending_permissions
-                                                                        .iter()
-                                                                        .position(|p| {
-                                                                            p.id == perm.id
-                                                                        })
-                                                                    {
-                                                                        self.pending_permissions
-                                                                            .remove(idx);
-                                                                    }
-                                                                }
-                                                            });
-                                                        });
-                                                }
-                                            }
-                                        }
-                                    });
-                            });
+                            for tool in &msg.tool_calls {
+                                self.render_warp_tool_block(ui, tool, session_id);
+                            }
                         }
                     });
 
@@ -1251,127 +1132,340 @@ impl OpenCodeApp {
         ui.add_space(4.0);
     }
 
-    fn render_tool_call_detail(&self, ui: &mut egui::Ui, tool: &ToolCall) {
-        ui.group(|ui| {
-            ui.set_min_width(ui.available_width());
+    fn render_warp_tool_block(
+        &mut self,
+        ui: &mut egui::Ui,
+        tool: &ToolCall,
+        session_id: Option<&str>,
+    ) {
+        let is_running = tool.status != "success"
+            && tool.status != "completed"
+            && tool.status != "error"
+            && tool.status != "cancelled";
+        let has_error = tool.error.is_some();
+        let tool_id = tool.id.clone();
 
-            ui.horizontal(|ui| {
-                let status_icon = match tool.status.as_str() {
-                    "success" | "completed" => "✅",
-                    "error" => "❌",
-                    _ => "⏳",
-                };
-                ui.label(&tool.name);
-                egui_twemoji::EmojiLabel::new(status_icon).show(ui);
-                ui.label(&tool.status);
+        // Check for permission
+        let perm_opt = if let (Some(sid), Some(call_id)) = (session_id, &tool.call_id) {
+            self.pending_permissions
+                .iter()
+                .find(|p| {
+                    p.session_id == sid && p.call_id.as_deref() == Some(call_id.as_str())
+                })
+                .cloned()
+        } else {
+            None
+        };
+        let has_permission = perm_opt.is_some();
 
-                if let (Some(start), Some(end)) = (tool.started_at, tool.finished_at) {
-                    let duration_ms = end - start;
-                    ui.label(format!("({:.1}s)", duration_ms as f64 / 1000.0));
-                } else if tool.started_at.is_some() {
-                    ui.label("(in progress)");
+        let id = ui.make_persistent_id(&tool_id);
+        let default_open = is_running || has_permission || has_error;
+        let mut is_expanded = ui.data(|d| d.get_temp::<bool>(id).unwrap_or(default_open));
+
+        ui.push_id(id, |ui| { ui.vertical(|ui| {
+            // -- Header --
+            let header_rounding = if is_expanded {
+                egui::CornerRadius {
+                    nw: 6,
+                    ne: 6,
+                    sw: 0,
+                    se: 0,
                 }
+            } else {
+                egui::CornerRadius::same(6)
+            };
 
-                if let Some(call_id) = &tool.call_id {
-                    ui.small(format!("ID: {call_id}"));
-                }
-            });
+            egui::Frame::new()
+                .fill(egui::Color32::from_gray(45))
+                .corner_radius(header_rounding)
+                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
+                .inner_margin(8.0)
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        // Header Row (Clickable)
+                        let mut toggle_requested = false;
 
-            if let Some(command) = Self::extract_field_as_string(&tool.input, "command") {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Command").strong());
-                ui.indent("tool_command", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.monospace(&command);
-                        if ui.small_button("Copy").clicked() {
-                            ui.ctx().copy_text(command.clone());
+                        ui.horizontal(|ui| {
+                            ui.style_mut().spacing.item_spacing.x = 8.0;
+
+                            // Right Side (Duration) - Render first to stick to right
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if let (Some(start), Some(end)) = (tool.started_at, tool.finished_at) {
+                                    let duration_ms = end - start;
+                                    let text = format!("{:.1}s", duration_ms as f64 / 1000.0);
+                                    if ui.add(egui::Label::new(
+                                        egui::RichText::new(text).weak()
+                                    ).sense(egui::Sense::click())).clicked() {
+                                        toggle_requested = true;
+                                    }
+                                } else if tool.started_at.is_some() {
+                                    if ui.add(egui::Label::new(
+                                        egui::RichText::new("...").weak()
+                                    ).sense(egui::Sense::click())).clicked() {
+                                        toggle_requested = true;
+                                    }
+                                }
+
+                                // Left Side + Middle (Path) - Fills remaining space
+                                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                    // Status Icon
+                                    let status_icon = match tool.status.as_str() {
+                                        "success" | "completed" => "✅",
+                                        "error" => "❌",
+                                        "cancelled" => "🚫",
+                                        _ => "⏳",
+                                    };
+                                    if ui.add(egui::Label::new(status_icon).sense(egui::Sense::click())).clicked() {
+                                        toggle_requested = true;
+                                    }
+
+                                    // Name
+                                    let name_text = egui::RichText::new(format!("({})", tool.name))
+                                        .strong()
+                                        .color(egui::Color32::WHITE);
+                                    if ui.add(egui::Label::new(name_text).sense(egui::Sense::click())).clicked() {
+                                        toggle_requested = true;
+                                    }
+
+                                    // Separator
+                                    let sep_text = egui::RichText::new("  -  ").color(egui::Color32::from_gray(100));
+                                    if ui.add(egui::Label::new(sep_text).sense(egui::Sense::click())).clicked() {
+                                        toggle_requested = true;
+                                    }
+
+                                    // Command Summary
+                                    let parsed_input_store;
+                                    let effective_input = if let Some(s) = tool.input.as_str() {
+                                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(s) {
+                                            parsed_input_store = val;
+                                            &parsed_input_store
+                                        } else {
+                                            &tool.input
+                                        }
+                                    } else {
+                                        &tool.input
+                                    };
+
+                                    let get_arg = |key: &str| -> Option<String> {
+                                        Self::extract_field_as_string(effective_input, key).or_else(|| {
+                                            effective_input
+                                                .get("parameters")
+                                                .and_then(|p| Self::extract_field_as_string(p, key))
+                                        })
+                                    };
+
+                                    let summary_text = if let Some(command) = get_arg("command") {
+                                        Some(command)
+                                    } else if let Some(path) = get_arg("filePath")
+                                        .or_else(|| get_arg("path"))
+                                        .or_else(|| get_arg("file_path"))
+                                        .or_else(|| get_arg("filename"))
+                                    {
+                                        Some(path)
+                                    } else if let Some(url) = get_arg("url") {
+                                        Some(url)
+                                    } else if let Some(prompt) = get_arg("prompt") {
+                                        Some(prompt)
+                                    } else {
+                                        None
+                                    };
+
+                                    if let Some(text) = summary_text {
+                                        // Scroll area for full path
+                                        let available = ui.available_width();
+                                        egui::ScrollArea::horizontal()
+                                            .max_width(available)
+                                            .show(ui, |ui| {
+                                                ui.label(
+                                                    egui::RichText::new(text)
+                                                        .monospace()
+                                                        .color(egui::Color32::from_gray(180)),
+                                                );
+                                            });
+                                    } else {
+                                        // Fallback
+                                        ui.label(
+                                            egui::RichText::new("Run")
+                                                .monospace()
+                                                .color(egui::Color32::from_gray(180)),
+                                        );
+                                    }
+                                });
+                            });
+                        });
+
+                        if toggle_requested {
+                            is_expanded = !is_expanded;
+                            ui.data_mut(|d| d.insert_temp(id, is_expanded));
+                        }
+
+                        // Permission Row (Inside Header)
+                        if let Some(perm) = perm_opt {
+                            ui.add_space(6.0);
+                            egui::Frame::default()
+                                .fill(egui::Color32::from_rgba_premultiplied(60, 20, 20, 255))
+                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(180, 50, 50)))
+                                .corner_radius(4)
+                                .inner_margin(8.0)
+                                .show(ui, |ui| {
+
+                                    ui.horizontal(|ui| {
+                                        if ui.button("❌ Reject").clicked() {
+                                            self.action_respond_permission(
+                                                perm.session_id.clone(),
+                                                perm.id.clone(),
+                                                "reject",
+                                            );
+                                            if let Some(idx) = self
+                                                .pending_permissions
+                                                .iter()
+                                                .position(|p| p.id == perm.id)
+                                            {
+                                                self.pending_permissions.remove(idx);
+                                            }
+                                        }
+                                        if ui.button("✅ Allow Once").clicked() {
+                                            self.action_respond_permission(
+                                                perm.session_id.clone(),
+                                                perm.id.clone(),
+                                                "once",
+                                            );
+                                            if let Some(idx) = self
+                                                .pending_permissions
+                                                .iter()
+                                                .position(|p| p.id == perm.id)
+                                            {
+                                                self.pending_permissions.remove(idx);
+                                            }
+                                        }
+                                        if ui.button("✅ Always Allow").clicked() {
+                                            self.action_respond_permission(
+                                                perm.session_id.clone(),
+                                                perm.id.clone(),
+                                                "always",
+                                            );
+                                            if let Some(idx) = self
+                                                .pending_permissions
+                                                .iter()
+                                                .position(|p| p.id == perm.id)
+                                            {
+                                                self.pending_permissions.remove(idx);
+                                            }
+                                        }
+                                    });
+                                });
                         }
                     });
                 });
-            }
 
-            if let Some(url) = Self::extract_field_as_string(&tool.input, "url") {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("URL").strong());
-                ui.indent("tool_url", |ui| {
-                    ui.horizontal(|ui| {
-                        ui.monospace(&url);
-                        if ui.small_button("Copy").clicked() {
-                            ui.ctx().copy_text(url.clone());
-                        }
-                    });
-                });
-            }
-
-            if !tool.input.is_null() {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Parameters").strong());
-                ui.indent("tool_params", |ui| {
-                    egui::ScrollArea::vertical()
-                        .max_height(160.0)
-                        .show(ui, |ui| {
-                            ui.monospace(Self::format_json_value(&tool.input));
-                        });
-                });
-            }
-
-            if !tool.metadata.is_empty() {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Metadata").strong());
-                ui.indent("tool_meta", |ui| {
-                    egui::ScrollArea::vertical()
-                        .max_height(120.0)
-                        .show(ui, |ui| {
-                            ui.monospace(Self::format_json_map(&tool.metadata));
-                        });
-                });
-            }
-
-            if !tool.logs.is_empty() {
-                ui.add_space(4.0);
-                egui::CollapsingHeader::new("Logs")
-                    .id_salt(format!("{}_logs", tool.id))
+            // -- Body --
+            if is_expanded {
+                egui::Frame::new()
+                    .fill(egui::Color32::BLACK)
+                    .corner_radius(egui::CornerRadius {
+                        nw: 0,
+                        ne: 0,
+                        sw: 6,
+                        se: 6,
+                    })
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
+                    .inner_margin(12.0)
                     .show(ui, |ui| {
-                        for log in &tool.logs {
-                            ui.label(egui::RichText::new(log).monospace().small());
+                        ui.set_min_width(ui.available_width());
+
+                        // Command
+                        if let Some(command) = Self::extract_field_as_string(&tool.input, "command")
+                        {
+                            ui.label(
+                                egui::RichText::new("COMMAND")
+                                    .small()
+                                    .color(egui::Color32::from_gray(120)),
+                            );
+                            ui.add_space(2.0);
+                            let mut text = command.as_str();
+                            let cmd_layout = egui::TextEdit::multiline(&mut text)
+                                .font(egui::TextStyle::Monospace)
+                                .code_editor()
+                                .interactive(false)
+                                .desired_width(f32::INFINITY);
+                            ui.add(cmd_layout);
+                            ui.add_space(8.0);
+                        }
+
+                        // Input Arguments (if not just command)
+                        // Actually show full input if complex?
+                        // Let's hide specific fields if we showed them specially
+                        let mut display_input = tool.input.clone();
+                        if let serde_json::Value::Object(ref mut map) = display_input {
+                            map.remove("command");
+                        }
+                        if !display_input.is_null()
+                            && display_input != serde_json::Value::Object(serde_json::Map::new())
+                        {
+                            ui.label(
+                                egui::RichText::new("INPUT")
+                                    .small()
+                                    .color(egui::Color32::from_gray(120)),
+                            );
+                            ui.add_space(2.0);
+                            ui.monospace(Self::format_json_value(&display_input));
+                            ui.add_space(8.0);
+                        }
+
+                        // Output
+                        if let Some(output) = &tool.output {
+                            ui.label(
+                                egui::RichText::new("OUTPUT")
+                                    .small()
+                                    .color(egui::Color32::from_gray(120)),
+                            );
+                            ui.add_space(2.0);
+
+                            egui::ScrollArea::vertical()
+                                .max_height(300.0)
+                                .show(ui, |ui| {
+                                    let mut text = output.as_str();
+                                    ui.add(
+                                        egui::TextEdit::multiline(&mut text)
+                                            .font(egui::TextStyle::Monospace)
+                                            .code_editor()
+                                            .desired_width(f32::INFINITY)
+                                            .interactive(false),
+                                    );
+                                });
+                            ui.add_space(8.0);
+                        }
+
+                        // Error
+                        if let Some(error) = &tool.error {
+                            ui.label(
+                                egui::RichText::new("ERROR")
+                                    .small()
+                                    .color(egui::Color32::RED),
+                            );
+                            ui.add_space(2.0);
+                            ui.colored_label(egui::Color32::RED, error);
+                            ui.add_space(8.0);
+                        }
+
+                        // Logs
+                        if !tool.logs.is_empty() {
+                            ui.label(
+                                egui::RichText::new("LOGS")
+                                    .small()
+                                    .color(egui::Color32::from_gray(120)),
+                            );
+                            egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
+                                for log in &tool.logs {
+                                    ui.monospace(log);
+                                }
+                            });
                         }
                     });
             }
 
-            if let Some(error) = &tool.error {
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new("Error")
-                        .strong()
-                        .color(egui::Color32::RED),
-                );
-                ui.indent("tool_error", |ui| {
-                    egui::ScrollArea::vertical()
-                        .max_height(160.0)
-                        .show(ui, |ui| {
-                            ui.monospace(error);
-                        });
-                });
-                return;
-            }
-
-            if let Some(output) = &tool.output {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new("Output").strong());
-                ui.indent("tool_output", |ui| {
-                    egui::ScrollArea::vertical()
-                        .max_height(200.0)
-                        .show(ui, |ui| {
-                            ui.monospace(output);
-                        });
-                    if ui.small_button("Copy output").clicked() {
-                        ui.ctx().copy_text(output.clone());
-                    }
-                });
-            }
-        });
-
-        ui.add_space(6.0);
+            ui.add_space(8.0); // Spacing between blocks
+        }); });
     }
 
     fn extract_field_as_string(value: &serde_json::Value, key: &str) -> Option<String> {
@@ -1392,14 +1486,6 @@ impl OpenCodeApp {
         }
     }
 
-    fn format_json_map(map: &serde_json::Map<String, serde_json::Value>) -> String {
-        let mut entries: Vec<String> = map
-            .iter()
-            .map(|(k, v)| format!("{k}: {}", Self::format_json_value(v)))
-            .collect();
-        entries.sort();
-        entries.join("\n")
-    }
 
     fn action_start_only(&mut self, ctx: &egui::Context) {
         if self.server_in_flight || self.runtime.is_none() {
@@ -2574,9 +2660,6 @@ impl eframe::App for OpenCodeApp {
                             }
                             if !has_session {
                                 ui.small("(Wait...)");
-                            }
-                            if has_session && blocked {
-                                ui.small("Permission pending — respond in tool bubble");
                             }
                             if has_session && streaming {
                                 ui.small("Stop to cancel response");
