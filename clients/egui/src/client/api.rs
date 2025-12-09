@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::error::api::ApiError;
-use crate::types::models::{MessageRequest, MessagePart, ModelIdentifier};
+use crate::types::models::{MessagePart, MessageRequest, ModelIdentifier};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
@@ -119,12 +119,17 @@ impl OpencodeClient {
         Ok(resp.status().is_success())
     }
 
-    pub async fn send_message(&self, session_id: &str, text: &str, model: Option<(String, String)>) -> Result<(), ApiError> {
+    pub async fn send_message(
+        &self,
+        session_id: &str,
+        text: &str,
+        model: Option<(String, String)>,
+    ) -> Result<(), ApiError> {
         let url = self
             .base
             .join(&format!("session/{session_id}/message"))
             .map_err(|e| ApiError::Url(e.to_string()))?;
-        
+
         let body = MessageRequest {
             parts: vec![MessagePart {
                 part_type: "text".to_string(),
@@ -132,7 +137,7 @@ impl OpencodeClient {
             }],
             model: model.map(|(provider_id, model_id)| ModelIdentifier::new(provider_id, model_id)),
         };
-        
+
         let resp = self
             .with_dir(self.http.post(url).json(&body))
             .send()
@@ -144,7 +149,12 @@ impl OpencodeClient {
         Ok(())
     }
 
-    pub async fn respond_permission(&self, session_id: &str, permission_id: &str, response: &str) -> Result<(), ApiError> {
+    pub async fn respond_permission(
+        &self,
+        session_id: &str,
+        permission_id: &str,
+        response: &str,
+    ) -> Result<(), ApiError> {
         let url = self
             .base
             .join(&format!("session/{session_id}/permissions/{permission_id}"))
@@ -159,5 +169,21 @@ impl OpencodeClient {
             return Err(ApiError::Http(format!("Status {}", resp.status())));
         }
         Ok(())
+    }
+
+    pub async fn abort_session(&self, session_id: &str) -> Result<bool, ApiError> {
+        let url = self
+            .base
+            .join(&format!("session/{session_id}/abort"))
+            .map_err(|e| ApiError::Url(e.to_string()))?;
+        let resp = self
+            .with_dir(self.http.post(url))
+            .send()
+            .await
+            .map_err(|e| ApiError::Http(e.to_string()))?;
+        if !resp.status().is_success() {
+            return Err(ApiError::Http(format!("Status {}", resp.status())));
+        }
+        Ok(true)
     }
 }

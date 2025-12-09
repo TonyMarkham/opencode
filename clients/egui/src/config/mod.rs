@@ -69,35 +69,36 @@ impl Default for UiPreferences {
     }
 }
 
-fn default_base_font_points() -> f32 { 14.0 }
+fn default_base_font_points() -> f32 {
+    14.0
+}
 
 impl UiPreferences {
     pub fn apply_to_context(&self, ctx: &eframe::egui::Context) {
-        use eframe::egui::{FontId, TextStyle, FontFamily};
-        
+        use eframe::egui::{FontFamily, FontId, TextStyle};
+
         let base = self.base_font_points + self.font_size.offset();
-        
+
         ctx.style_mut(|style| {
             style.text_styles.insert(
                 TextStyle::Heading,
                 FontId::new(base + 4.0, FontFamily::Proportional),
             );
-            
-            style.text_styles.insert(
-                TextStyle::Body,
-                FontId::new(base, FontFamily::Proportional),
-            );
-            
+
+            style
+                .text_styles
+                .insert(TextStyle::Body, FontId::new(base, FontFamily::Proportional));
+
             style.text_styles.insert(
                 TextStyle::Button,
                 FontId::new(base, FontFamily::Proportional),
             );
-            
+
             style.text_styles.insert(
                 TextStyle::Small,
                 FontId::new(base - 2.0, FontFamily::Proportional),
             );
-            
+
             style.text_styles.insert(
                 TextStyle::Monospace,
                 FontId::new(base, FontFamily::Monospace),
@@ -173,7 +174,7 @@ impl AppConfig {
         directories::ProjectDirs::from("", "", "opencode-egui")
             .map(|dirs| dirs.config_dir().join("config.json"))
     }
-    
+
     pub fn load() -> Self {
         if let Some(path) = Self::config_path() {
             if path.exists() {
@@ -186,7 +187,7 @@ impl AppConfig {
         }
         Self::default()
     }
-    
+
     pub fn save(&self) {
         if let Some(path) = Self::config_path() {
             if let Some(parent) = path.parent() {

@@ -826,7 +826,7 @@ export namespace Server {
           }),
         ),
         async (c) => {
-          SessionPrompt.cancel(c.req.valid("param").id)
+          await SessionPrompt.cancelAndPrune(c.req.valid("param").id)
           return c.json(true)
         },
       )

@@ -49,6 +49,7 @@ import { fn } from "@/util/fn"
 import { SessionProcessor } from "./processor"
 import { TaskTool } from "@/tool/task"
 import { SessionStatus } from "./status"
+import { Storage } from "@/storage/storage"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -219,6 +220,41 @@ export namespace SessionPrompt {
     return controller.signal
   }
 
+  async function markCancelled(sessionID: string) {
+    const now = Date.now()
+    for await (const item of MessageV2.stream(sessionID)) {
+      if (item.info.role === "assistant" && !item.info.finish) {
+        const assistant = item.info as MessageV2.Assistant
+        await Session.updateMessage({
+          ...assistant,
+          finish: "aborted",
+          time: {
+            ...assistant.time,
+            completed: now,
+          },
+        })
+
+        for (const part of item.parts) {
+          if (part.type !== "tool") continue
+          const time = part.state.time ?? {}
+          await Session.updatePart({
+            ...part,
+            state: {
+              ...part.state,
+              status: "cancelled",
+              time: {
+                ...time,
+                end: now,
+                start: time.start ?? now,
+              },
+            },
+          } as MessageV2.ToolPart)
+        }
+        break
+      }
+    }
+  }
+
   export function cancel(sessionID: string) {
     log.info("cancel", { sessionID })
     const s = state()
@@ -231,6 +267,48 @@ export namespace SessionPrompt {
     delete s[sessionID]
     SessionStatus.set(sessionID, { type: "idle" })
     return
+  }
+
+  async function removeMessageWithParts(sessionID: string, messageID: string) {
+    try {
+      const parts = await Storage.list(["part", messageID])
+      for (const p of parts) {
+        await Storage.remove(p)
+      }
+      await Session.removeMessage({ sessionID, messageID })
+      log.info("prune_removed_message", { sessionID, messageID, parts: parts.length })
+    } catch (e) {
+      log.error("prune_remove_failed", { sessionID, messageID, error: String(e) })
+    }
+  }
+
+  async function pruneCancelled(sessionID: string) {
+    let targetAssistant: MessageV2.Assistant | undefined
+    for await (const item of MessageV2.stream(sessionID)) {
+      if (item.info.role === "assistant" && item.info.finish === "aborted") {
+        targetAssistant = item.info as MessageV2.Assistant
+        break
+      }
+    }
+
+    if (!targetAssistant) {
+      log.info("prune_no_aborted", { sessionID })
+      return
+    }
+
+    const parentID = targetAssistant.parentID
+    log.info("prune_aborted", { sessionID, assistantID: targetAssistant.id, parentID })
+
+    await removeMessageWithParts(sessionID, targetAssistant.id)
+    if (parentID) {
+      await removeMessageWithParts(sessionID, parentID)
+    }
+  }
+
+  export async function cancelAndPrune(sessionID: string) {
+    cancel(sessionID)
+    await markCancelled(sessionID)
+    await pruneCancelled(sessionID)
   }
 
   export const loop = fn(Identifier.schema("session"), async (sessionID) => {
@@ -250,6 +328,25 @@ export namespace SessionPrompt {
       log.info("loop", { step, sessionID })
       if (abort.aborted) break
       let msgs = await MessageV2.filterCompacted(MessageV2.stream(sessionID))
+
+      // Drop aborted assistant turns and their parent user messages so future turns
+      // do not inherit cancelled requests.
+      const abortedParents = new Set<string>()
+      msgs = msgs.filter((msg) => {
+        if (msg.info.role === "assistant" && msg.info.finish === "aborted") {
+          if (msg.info.parentID) abortedParents.add(msg.info.parentID)
+          return false
+        }
+        return true
+      })
+      if (abortedParents.size > 0) {
+        msgs = msgs.filter((msg) => {
+          if (msg.info.role === "user" && abortedParents.has(msg.info.id)) {
+            return false
+          }
+          return true
+        })
+      }
 
       let lastUser: MessageV2.User | undefined
       let lastAssistant: MessageV2.Assistant | undefined

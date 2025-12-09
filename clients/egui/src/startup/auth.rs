@@ -21,10 +21,10 @@ pub enum AuthSyncStatus {
 pub enum AuthSyncError {
     #[error("Failed to load .env file: {0}")]
     EnvLoad(String),
-    
+
     #[error("HTTP request failed for provider '{provider}': {message}")]
     Http { provider: String, message: String },
-    
+
     #[error("Failed to parse response from server: {0}")]
     Parse(String),
 }
@@ -51,7 +51,7 @@ fn extract_provider_name(env_var: &str) -> Option<String> {
 }
 
 /// Sync API keys from .env file to the OpenCode server.
-/// 
+///
 /// This function:
 /// 1. Loads the .env file from the executable directory
 /// 2. Extracts all *_API_KEY environment variables
@@ -63,14 +63,14 @@ pub async fn sync_api_keys_to_server(server_url: &str) -> AuthSyncState {
         synced_providers: Vec::new(),
         failed_providers: Vec::new(),
     };
-    
+
     // Load .env file from the executable directory (or current directory in dev)
     if let Err(e) = dotenvy::dotenv() {
         // .env file not found is not a fatal error - user might not have set up keys yet
         state.status = AuthSyncStatus::Failed(format!("No .env file found: {e}"));
         return state;
     }
-    
+
     // Collect all API keys from environment variables
     let mut api_keys: HashMap<String, String> = HashMap::new();
     for (key, value) in env::vars() {
@@ -81,12 +81,12 @@ pub async fn sync_api_keys_to_server(server_url: &str) -> AuthSyncState {
             }
         }
     }
-    
+
     if api_keys.is_empty() {
         state.status = AuthSyncStatus::Failed("No API keys found in .env file".to_string());
         return state;
     }
-    
+
     // Create HTTP client
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -98,7 +98,7 @@ pub async fn sync_api_keys_to_server(server_url: &str) -> AuthSyncState {
             return state;
         }
     };
-    
+
     // Sync each API key to the server
     for (provider, key) in api_keys {
         let url = format!("{server_url}/auth/{provider}");
@@ -106,7 +106,7 @@ pub async fn sync_api_keys_to_server(server_url: &str) -> AuthSyncState {
             "type": "api",
             "key": key,
         });
-        
+
         match client.put(&url).json(&body).send().await {
             Ok(resp) => {
                 if resp.status().is_success() {
@@ -117,11 +117,13 @@ pub async fn sync_api_keys_to_server(server_url: &str) -> AuthSyncState {
                 }
             }
             Err(e) => {
-                state.failed_providers.push((provider.clone(), e.to_string()));
+                state
+                    .failed_providers
+                    .push((provider.clone(), e.to_string()));
             }
         }
     }
-    
+
     // Set final status
     if state.failed_providers.is_empty() {
         state.status = AuthSyncStatus::Complete;
@@ -130,46 +132,46 @@ pub async fn sync_api_keys_to_server(server_url: &str) -> AuthSyncState {
     } else {
         state.status = AuthSyncStatus::Complete;
     }
-    
+
     state
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn given_openai_env_var_when_extract_provider_then_returns_openai() {
         // Given
         let env_var = "OPENAI_API_KEY";
-        
+
         // When
         let result = extract_provider_name(env_var);
-        
+
         // Then
         assert_eq!(result, Some("openai".to_string()));
     }
-    
+
     #[test]
     fn given_anthropic_env_var_when_extract_provider_then_returns_anthropic() {
         // Given
         let env_var = "ANTHROPIC_API_KEY";
-        
+
         // When
         let result = extract_provider_name(env_var);
-        
+
         // Then
         assert_eq!(result, Some("anthropic".to_string()));
     }
-    
+
     #[test]
     fn given_non_api_key_env_var_when_extract_provider_then_returns_none() {
         // Given
         let env_var = "PATH";
-        
+
         // When
         let result = extract_provider_name(env_var);
-        
+
         // Then
         assert_eq!(result, None);
     }

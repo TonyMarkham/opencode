@@ -1,11 +1,16 @@
 use eframe::egui;
-use std::sync::{Arc, mpsc};
-use tokio::runtime::Runtime;
 use serde::Deserialize;
+use std::sync::{Arc, mpsc};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::runtime::Runtime;
 
 use crate::discovery::process::{ServerInfo, check_health, discover, stop_pid};
 use crate::discovery::spawn::spawn_and_wait;
 use crate::startup::auth::{AuthSyncState, sync_api_keys_to_server};
+
+fn dbg_log(msg: impl AsRef<str>) {
+    eprintln!("[egui-debug] {}", msg.as_ref());
+}
 
 pub struct OpenCodeApp {
     // Multi-session tabs (server-backed sessions in later milestones)
@@ -25,10 +30,10 @@ pub struct OpenCodeApp {
 
     // API client
     client: Option<crate::client::api::OpencodeClient>,
-    
+
     // Auth sync state
     auth_sync_state: AuthSyncState,
-    
+
     // Audio task
     audio_tx: Option<mpsc::Sender<AudioCmd>>,
     audio_enabled: bool,
@@ -45,7 +50,7 @@ pub struct OpenCodeApp {
     show_settings: bool,
     base_url_input: String,
     directory_input: String,
-    
+
     // Model discovery UI state
     show_model_discovery: bool,
     discovery_provider: Option<String>,
@@ -53,10 +58,10 @@ pub struct OpenCodeApp {
     discovery_error: Option<String>,
     discovery_in_progress: bool,
     discovery_search: String,
-    
+
     // Permission handling
     pending_permissions: Vec<PermissionInfo>,
-    
+
     // Markdown rendering
     commonmark_cache: egui_commonmark::CommonMarkCache,
 }
@@ -67,8 +72,14 @@ struct Tab {
     session_id: Option<String>,
     directory: Option<String>,
     messages: Vec<DisplayMessage>,
+    active_assistant: Option<String>,
     input: String,
     selected_model: Option<(String, String)>, // (provider, model_id)
+    cancelled_messages: Vec<String>,
+    cancelled_calls: Vec<String>,
+    cancelled_after: Option<i64>,
+    suppress_incoming: bool,
+    last_send_at: i64,
 }
 
 #[derive(Clone)]
@@ -81,15 +92,28 @@ struct DisplayMessage {
 
 #[derive(Clone)]
 struct ToolCall {
+    id: String,
     name: String,
     status: String,
     call_id: Option<String>,
+    input: serde_json::Value,
+    output: Option<String>,
+    error: Option<String>,
+    metadata: serde_json::Map<String, serde_json::Value>,
+    started_at: Option<i64>,
+    finished_at: Option<i64>,
+    logs: Vec<String>,
 }
 
 enum UiMsg {
     ServerConnected(ServerInfo),
     ServerError(String),
-    SessionCreated { tab_idx: usize, id: String, title: String, directory: String },
+    SessionCreated {
+        tab_idx: usize,
+        id: String,
+        title: String,
+        directory: String,
+    },
     GlobalEvent(serde_json::Value),
     PermissionRequest(PermissionInfo),
     // Auth sync events
@@ -142,12 +166,12 @@ impl OpenCodeApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // Install image loaders for colored emoji support via egui-twemoji
         egui_extras::install_image_loaders(&cc.egui_ctx);
-        
+
         // Load config and apply UI preferences
         let config = crate::config::AppConfig::load();
         let models_config = crate::config::models::ModelsConfig::load();
         config.ui.apply_to_context(&cc.egui_ctx);
-        
+
         Self {
             tabs: Vec::new(),
             active: 0,
@@ -190,18 +214,19 @@ impl OpenCodeApp {
             self.runtime = Some(rt.clone());
             self.ui_rx = Some(rx);
             self.ui_tx = Some(tx.clone());
-            
+
             // Start audio task if model is configured or auto-detected
             let model_path = if let Some(configured_path) = &self.config.audio.whisper_model_path {
                 Some(std::path::PathBuf::from(configured_path))
             } else {
                 // Auto-detect model relative to executable (for cargo make dev)
-                std::env::current_exe().ok()
+                std::env::current_exe()
+                    .ok()
                     .and_then(|exe| exe.parent().map(|p| p.to_path_buf()))
                     .map(|exe_dir| exe_dir.join("models").join("ggml-base.en.bin"))
                     .filter(|path| path.exists())
             };
-            
+
             if let Some(path) = model_path {
                 eprintln!("Starting audio task with model: {}", path.display());
                 self.start_audio_task(&rt, tx.clone(), path, ctx);
@@ -212,60 +237,62 @@ impl OpenCodeApp {
 
         self.server_in_flight = true;
         self.discovery_started = true;
-        
+
         let tx = self.ui_tx.as_ref().unwrap().clone();
         let rt = self.runtime.as_ref().unwrap().clone();
         let egui_ctx = ctx.clone();
-        
+
         rt.spawn(async move {
             let msg = try_discover_or_spawn().await;
             let _ = tx.send(msg);
             egui_ctx.request_repaint();
         });
     }
-    
+
     fn start_audio_task(
-        &mut self, 
-        runtime: &Arc<Runtime>, 
+        &mut self,
+        runtime: &Arc<Runtime>,
         ui_tx: mpsc::Sender<UiMsg>,
         model_path: std::path::PathBuf,
-        ctx: &egui::Context
+        ctx: &egui::Context,
     ) {
-        
         let (audio_tx, audio_rx) = mpsc::channel::<AudioCmd>();
         self.audio_tx = Some(audio_tx);
-        
+
         let egui_ctx = ctx.clone();
         runtime.spawn(async move {
             run_audio_task(audio_rx, ui_tx, model_path, egui_ctx).await;
         });
     }
 
-/// Drain the UI message channel fed by background tasks (e.g., SSE subscription).
-/// This is not network polling; it only drains already-received events.
-fn drain_ui_msgs(&mut self, ctx: &egui::Context) {
+    /// Drain the UI message channel fed by background tasks (e.g., SSE subscription).
+    /// This is not network polling; it only drains already-received events.
+    fn drain_ui_msgs(&mut self, ctx: &egui::Context) {
+        let mut auto_rejects: Vec<(String, String)> = Vec::new();
+
         if let Some(rx) = &self.ui_rx {
             while let Ok(msg) = rx.try_recv() {
                 match msg {
-UiMsg::ServerConnected(info) => {
-                        // Create client and subscribe to SSE
+                    UiMsg::ServerConnected(info) => {
                         let base = info.base_url.clone();
                         match crate::client::api::OpencodeClient::new(&base) {
                             Ok(mut c) => {
-                                // Apply directory override to header if configured
                                 if let Some(dir) = &self.config.server.directory_override {
                                     c.directory = Some(std::path::PathBuf::from(dir));
                                 }
                                 self.client = Some(c)
-                            },
+                            }
                             Err(e) => self.server_error = Some(e.to_string()),
                         }
+
                         if let Some(rt) = &self.runtime {
                             let tx2 = self.ui_tx.as_ref().unwrap().clone();
                             let egui_ctx = ctx.clone();
                             let base_for_sse = base.clone();
                             rt.spawn(async move {
-                                if let Ok(mut rx) = crate::client::events::subscribe_global(&base_for_sse).await {
+                                if let Ok(mut rx) =
+                                    crate::client::events::subscribe_global(&base_for_sse).await
+                                {
                                     while let Some(ev) = rx.recv().await {
                                         let _ = tx2.send(UiMsg::GlobalEvent(ev.payload.clone()));
                                         egui_ctx.request_repaint();
@@ -273,16 +300,15 @@ UiMsg::ServerConnected(info) => {
                                 }
                             });
                         }
-                        // Save base_url to config
+
                         self.config.server.last_base_url = Some(base.clone());
                         self.base_url_input = base;
                         self.config.save();
-                        
+
                         self.server = Some(info.clone());
                         self.server_error = None;
                         self.server_in_flight = false;
-                        
-                        // Start API key sync after server connection
+
                         if let Some(rt) = &self.runtime {
                             let tx3 = self.ui_tx.as_ref().unwrap().clone();
                             let egui_ctx2 = ctx.clone();
@@ -299,7 +325,12 @@ UiMsg::ServerConnected(info) => {
                         self.server = None;
                         self.server_in_flight = false;
                     }
-UiMsg::SessionCreated { tab_idx, id, title, directory } => {
+                    UiMsg::SessionCreated {
+                        tab_idx,
+                        id,
+                        title,
+                        directory,
+                    } => {
                         if let Some(tab) = self.tabs.get_mut(tab_idx) {
                             tab.title = title;
                             tab.session_id = Some(id);
@@ -307,26 +338,113 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                         }
                     }
                     UiMsg::GlobalEvent(payload) => {
-                        // Permission handling
                         let event_type = payload.get("type").and_then(|v| v.as_str());
                         match event_type {
                             Some("permission.updated") => {
                                 if let Some(props) = payload.get("properties") {
-                                    match serde_json::from_value::<PermissionInfo>(props.clone()) {
-                                        Ok(info) => {
+                                    if let Ok(info) =
+                                        serde_json::from_value::<PermissionInfo>(props.clone())
+                                    {
+                                        let mut is_cancelled = false;
+                                        if let Some(tab) = self
+                                            .tabs
+                                            .iter()
+                                            .find(|t| {
+                                                t.session_id.as_deref() == Some(info.session_id.as_str())
+                                            })
+                                        {
+                                            if let Some(call_id) = info.call_id.as_deref() {
+                                                if tab.cancelled_calls.iter().any(|c| c == call_id) {
+                                                    is_cancelled = true;
+                                                }
+                                            }
+
+                                            if !is_cancelled {
+                                                if tab
+                                                    .cancelled_messages
+                                                    .iter()
+                                                    .any(|m| m == &info.message_id)
+                                                {
+                                                    is_cancelled = true;
+                                                }
+                                            }
+
+                                            if !is_cancelled {
+                                                if let Some(cutoff) = tab.cancelled_after {
+                                                    if info.time.created as i64 <= cutoff {
+                                                        is_cancelled = true;
+                                                    }
+                                                }
+                                            }
+
+                                            if !is_cancelled {
+                                                if info.time.created as i64 <= tab.last_send_at {
+                                                    is_cancelled = true;
+                                                }
+                                            }
+
+                                            if !is_cancelled {
+                                                if tab.suppress_incoming {
+                                                    is_cancelled = true;
+                                                }
+                                            }
+
+                                            if !is_cancelled {
+                                                if tab.cancelled_messages.iter().any(|m| m == &info.message_id) {
+                                                    is_cancelled = true;
+                                                }
+                                            }
+                                            if !is_cancelled {
+                                                if let Some(call_id) = info.call_id.as_deref() {
+                                                    if tab.cancelled_calls.iter().any(|c| c == call_id) {
+                                                        is_cancelled = true;
+                                                    }
+                                                }
+                                            }
+
+                                            if !is_cancelled {
+                                                if tab.suppress_incoming {
+                                                    is_cancelled = true;
+                                                }
+                                            }
+
+                                            // if cancelled and skip_tools_for matched, text is already set in part handler
+                                        }
+
+                                        if is_cancelled {
+                                            dbg_log(&format!(
+                                                "perm auto-reject: sid={} mid={} call={:?} created={}",
+                                                info.session_id,
+                                                info.message_id,
+                                                info.call_id,
+                                                info.time.created
+                                            ));
+                                            auto_rejects.push((
+                                                info.session_id.clone(),
+                                                info.id.clone(),
+                                            ));
+                                        } else {
+                                            dbg_log(&format!(
+                                                "perm queued: sid={} mid={} call={:?} created={}",
+                                                info.session_id,
+                                                info.message_id,
+                                                info.call_id,
+                                                info.time.created
+                                            ));
                                             self.pending_permissions.push(info);
                                         }
-                                        Err(_e) => { }
                                     }
                                 }
-                                // Do not route permission events into chat rendering
                                 continue;
                             }
                             Some("permission.replied") => {
                                 if let Some(props) = payload.get("properties") {
                                     let pid = props.get("permissionID").and_then(|v| v.as_str());
                                     let sid = props.get("sessionID").and_then(|v| v.as_str());
-                                    let resp = props.get("response").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let resp = props
+                                        .get("response")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("?");
                                     if let (Some(pid), Some(sid)) = (pid, sid) {
                                         if let Some(idx) = self
                                             .pending_permissions
@@ -342,7 +460,6 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                             _ => {}
                         }
 
-                        // Extract sessionID from event for chat updates
                         let sid_opt = payload
                             .get("properties")
                             .and_then(|p| p.get("part"))
@@ -357,7 +474,7 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                                     .and_then(|v| v.as_str())
                                     .map(|s| s.to_string())
                             });
-                        
+
                         if let Some(sid) = sid_opt {
                             if let Some(tab) = self
                                 .tabs
@@ -370,21 +487,31 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                     }
                     UiMsg::RecordingStarted => {
                         self.audio_enabled = true;
-                        // Add notification message to chat history (client-side only)
                         if let Some(tab) = self.tabs.get_mut(self.active) {
                             tab.messages.push(DisplayMessage {
-                                message_id: format!("audio_rec_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()),
+                                message_id: format!(
+                                    "audio_rec_{}",
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_millis()
+                                ),
                                 role: "system".to_string(),
-                                text_parts: vec!["🎙 Recording...".to_string()],  // Studio microphone emoji (no variation selector)
+                                text_parts: vec!["🎙 Recording...".to_string()],
                                 tool_calls: Vec::new(),
                             });
                         }
                     }
                     UiMsg::RecordingStopped => {
-                        // Add processing message to chat history (client-side only)
                         if let Some(tab) = self.tabs.get_mut(self.active) {
                             tab.messages.push(DisplayMessage {
-                                message_id: format!("audio_proc_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()),
+                                message_id: format!(
+                                    "audio_proc_{}",
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_millis()
+                                ),
                                 role: "system".to_string(),
                                 text_parts: vec!["Processing audio...".to_string()],
                                 tool_calls: Vec::new(),
@@ -393,17 +520,21 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                     }
                     UiMsg::Transcription(text) => {
                         self.audio_enabled = false;
-                        // Insert transcription into active tab's input field
                         if let Some(tab) = self.tabs.get_mut(self.active) {
                             if !tab.input.is_empty() {
                                 tab.input.push(' ');
                             }
                             tab.input.push_str(&text);
-                            // Add success message to chat history (client-side only)
                             tab.messages.push(DisplayMessage {
-                                message_id: format!("audio_done_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()),
+                                message_id: format!(
+                                    "audio_done_{}",
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_millis()
+                                ),
                                 role: "system".to_string(),
-                                text_parts: vec!["✅ Transcription complete".to_string()],  // Check mark button emoji
+                                text_parts: vec!["✅ Transcription complete".to_string()],
                                 tool_calls: Vec::new(),
                             });
                         }
@@ -426,18 +557,27 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                     UiMsg::AudioError(err) => {
                         self.audio_enabled = false;
                         self.recording_state = RecordingState::Idle;
-                        // Add error message to chat history (client-side only)
                         if let Some(tab) = self.tabs.get_mut(self.active) {
                             tab.messages.push(DisplayMessage {
-                                message_id: format!("audio_err_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()),
+                                message_id: format!(
+                                    "audio_err_{}",
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_millis()
+                                ),
                                 role: "system".to_string(),
-                                text_parts: vec![format!("⚠ Audio: {}", err)],  // Warning emoji (no variation selector)
+                                text_parts: vec![format!("⚠ Audio: {}", err)],
                                 tool_calls: Vec::new(),
                             });
                         }
                     }
                 }
             }
+        }
+
+        for (sid, pid) in auto_rejects {
+            self.action_respond_permission(sid, pid, "reject");
         }
     }
 
@@ -458,24 +598,75 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
 
     fn handle_event(tab: &mut Tab, payload: &serde_json::Value) {
         let event_type = payload.get("type").and_then(|v| v.as_str());
-        
+
         match event_type {
             Some("message.updated") => {
                 // New message started - only create if ID doesn't exist
                 if let Some(props) = payload.get("properties") {
                     if let Some(info) = props.get("info") {
-                        let message_id = info.get("id").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-                        let role = info.get("role").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-                        
-                        // Only create if this message ID doesn't already exist
+                        let message_id = info
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+                        let role = info
+                            .get("role")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown")
+                            .to_string();
+                        let finish = info.get("finish").and_then(|v| v.as_str());
+                        let created = info
+                            .get("time")
+                            .and_then(|t| t.get("created"))
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(i64::MAX);
+
+                        if tab.cancelled_messages.iter().any(|m| m == &message_id) {
+                            dbg_log(&format!("message.updated drop: msg={} cancelled", message_id));
+                            return;
+                        }
+
+                        if let Some(cutoff) = tab.cancelled_after {
+                            if created <= cutoff {
+                                dbg_log(&format!(
+                                    "message.updated drop: msg={} created={} cutoff={} (cancelled)",
+                                    message_id, created, cutoff
+                                ));
+                                return;
+                            }
+                        }
+                        if created < tab.last_send_at {
+                            dbg_log(&format!(
+                                "message.updated drop: msg={} created={} last_send_at={}",
+                                message_id, created, tab.last_send_at
+                            ));
+                            return;
+                        }
+
+                        if role == "assistant" {
+                            if finish.is_some() {
+                                tab.active_assistant = None;
+                            } else {
+                                tab.active_assistant = Some(message_id.clone());
+                            }
+                        }
+                        if role == "user" {
+                            tab.suppress_incoming = false;
+                        }
+
                         if !tab.messages.iter().any(|m| m.message_id == message_id) {
+                            dbg_log(&format!(
+                                "message.updated accept: msg={} role={} created={} finish={:?}",
+                                message_id, role, created, finish
+                            ));
                             tab.messages.push(DisplayMessage {
-                                message_id: message_id,
-                                role: role,
+                                message_id: message_id.clone(),
+                                role: role.clone(),
                                 text_parts: Vec::new(),
                                 tool_calls: Vec::new(),
                             });
                         }
+
                     }
                 }
             }
@@ -483,31 +674,195 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                 // Part of a message - text events contain full accumulated content, not deltas
                 if let Some(props) = payload.get("properties") {
                     if let Some(part) = props.get("part") {
+                        let message_id = part.get("messageID").and_then(|v| v.as_str());
+                        if let Some(mid) = message_id {
+                            if tab.cancelled_messages.iter().any(|m| m == mid) {
+                                dbg_log(&format!(
+                                    "part drop: msg={} because cancelled", mid
+                                ));
+                                return;
+                            }
+                        } else {
+                            dbg_log("part drop: missing message_id");
+                            return;
+                        }
+
                         let part_type = part.get("type").and_then(|v| v.as_str());
+                        let role = tab
+                            .messages
+                            .iter()
+                            .find(|m| m.message_id.as_str() == message_id.unwrap_or(""))
+                            .map(|m| m.role.clone())
+                            .unwrap_or_else(|| "unknown".to_string());
+
+                        if let Some(mid) = message_id {
+                            if tab.cancelled_messages.iter().any(|m| m == mid) {
+                                dbg_log(&format!("part drop: msg={} cancelled", mid));
+                                return;
+                            }
+                        }
+
+                        if tab.suppress_incoming {
+                            if role == "assistant" {
+                                if part_type == Some("text") {
+                                    if let Some(mid) = message_id {
+                                        dbg_log(&format!(
+                                            "part clearing suppress on assistant text msg={}", mid
+                                        ));
+                                    }
+                                    tab.suppress_incoming = false;
+                                } else {
+                                    if let Some(mid) = message_id {
+                                        dbg_log(&format!(
+                                            "part drop: suppress active for assistant msg={} type={:?}",
+                                            mid, part_type
+                                        ));
+                                    }
+                                    return;
+                                }
+                            } else {
+                                if let Some(mid) = message_id {
+                                    dbg_log(&format!(
+                                        "part drop: suppress active for msg={} role={} type={:?}",
+                                        mid, role, part_type
+                                    ));
+                                }
+                                return;
+                            }
+                        }
+
+                        if let Some(call) = part
+                            .get("callID")
+                            .and_then(|v| v.as_str())
+                        {
+                            if tab.cancelled_calls.iter().any(|c| c == call) {
+                                dbg_log(&format!("part drop: call={} cancelled", call));
+                                return;
+                            }
+                        }
+
                         if part_type == Some("text") {
+
                             let text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                            if let Some(msg) = tab.messages.last_mut() {
-                                // Clear and replace - each event has the full text so far
-                                msg.text_parts.clear();
-                                msg.text_parts.push(text.to_string());
+                            if let Some(mid) = message_id {
+                                if let Some(msg) = tab.messages.iter_mut().find(|m| m.message_id == mid)
+                                {
+                                    msg.text_parts.clear();
+                                    msg.text_parts.push(text.to_string());
+                                }
                             }
                         } else if part_type == Some("tool") {
-                            let tool_name = part.get("tool").and_then(|v| v.as_str()).unwrap_or("unknown");
-                            let state = part.get("state").and_then(|v| v.get("status")).and_then(|v| v.as_str()).unwrap_or("unknown");
-                            let call_id = part.get("callID").and_then(|v| v.as_str()).map(|s| s.to_string());
-                            if let Some(msg) = tab.messages.last_mut() {
-                                // Prefer matching by call_id when present, otherwise fallback to name
-                                if let Some(existing) = msg.tool_calls.iter_mut().find(|t| {
-                                    if let (Some(a), Some(b)) = (&t.call_id, &call_id) { a == b } else { t.name == tool_name }
-                                }) {
-                                    existing.status = state.to_string();
-                                    if existing.call_id.is_none() { existing.call_id = call_id.clone(); }
-                                } else {
-                                    msg.tool_calls.push(ToolCall {
-                                        name: tool_name.to_string(),
-                                        status: state.to_string(),
-                                        call_id: call_id,
+                            let tool_id =
+                                part.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
+                            let tool_name = part
+                                .get("tool")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown");
+                            let call_id = part
+                                .get("callID")
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            let state = part.get("state");
+                            let status = state
+                                .and_then(|v| v.get("status"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown");
+                            let output = state
+                                .and_then(|v| v.get("output"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            let error = state
+                                .and_then(|v| v.get("error"))
+                                .and_then(|v| v.as_str())
+                                .map(|s| s.to_string());
+                            let logs = state
+                                .and_then(|v| v.get("logs"))
+                                .and_then(|v| v.as_array())
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|l| l.as_str().map(|s| s.to_string()))
+                                        .collect::<Vec<String>>()
+                                })
+                                .unwrap_or_default();
+                            let metadata = state
+                                .and_then(|v| v.get("metadata"))
+                                .and_then(|v| v.as_object())
+                                .cloned()
+                                .unwrap_or_default();
+                            let started_at = state
+                                .and_then(|v| v.get("started_at"))
+                                .and_then(|v| v.as_i64());
+                            let finished_at = state
+                                .and_then(|v| v.get("finished_at"))
+                                .and_then(|v| v.as_i64());
+                            let input = part
+                                .get("input")
+                                .cloned()
+                                .unwrap_or(serde_json::Value::Null);
+
+                            if let Some(mid) = message_id {
+                                if let Some(msg) = tab.messages.iter_mut().find(|m| m.message_id == mid)
+                                {
+                                    if let Some(call) = call_id.as_deref() {
+                                        if tab.cancelled_calls.iter().any(|c| c == call) {
+                                            dbg_log(&format!(
+                                                "tool part drop: msg={} call={} cancelled",
+                                                mid, call
+                                            ));
+                                            return;
+                                        }
+                                    }
+
+                                    let existing = msg.tool_calls.iter_mut().find(|t| {
+                                        t.id == tool_id
+                                            || t.call_id.as_deref() == call_id.as_deref()
                                     });
+
+                                    match existing {
+                                        Some(tool) => {
+                                            tool.name = tool_name.to_string();
+                                            tool.status = status.to_string();
+                                            if tool.call_id.is_none() {
+                                                tool.call_id = call_id.clone();
+                                            }
+                                            if !input.is_null() {
+                                                tool.input = input.clone();
+                                            }
+                                            if let Some(val) = output {
+                                                tool.output = Some(val);
+                                            }
+                                            if let Some(val) = error {
+                                                tool.error = Some(val);
+                                            }
+                                            if !metadata.is_empty() {
+                                                tool.metadata = metadata.clone();
+                                            }
+                                            if let Some(start) = started_at {
+                                                tool.started_at = Some(start);
+                                            }
+                                            if let Some(end) = finished_at {
+                                                tool.finished_at = Some(end);
+                                            }
+                                            if !logs.is_empty() {
+                                                tool.logs = logs.clone();
+                                            }
+                                        }
+                                        None => {
+                                            msg.tool_calls.push(ToolCall {
+                                                id: tool_id.to_string(),
+                                                name: tool_name.to_string(),
+                                                status: status.to_string(),
+                                                call_id: call_id,
+                                                input: input,
+                                                output: output,
+                                                error: error,
+                                                metadata: metadata,
+                                                started_at: started_at,
+                                                finished_at: finished_at,
+                                                logs: logs,
+                                            });
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -518,28 +873,82 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
         }
     }
 
+    fn cancel_active_response(tab: &mut Tab) {
+        if let Some(active_id) = tab.active_assistant.clone() {
+            let now_ms = match SystemTime::now().duration_since(UNIX_EPOCH) {
+                Ok(dur) => dur.as_millis() as i64,
+                Err(_) => 0,
+            };
+
+            dbg_log(&format!(
+                "stop: active_id={} cancelled_after={}", active_id, now_ms
+            ));
+
+            if let Some(msg) = tab.messages.iter_mut().find(|m| m.message_id == active_id) {
+                if msg.text_parts.is_empty() {
+                    msg.text_parts.push("✖ Cancelled".to_string());
+                }
+
+                for tool in &mut msg.tool_calls {
+                    if tool.status != "success"
+                        && tool.status != "error"
+                        && tool.status != "completed"
+                        && tool.status != "cancelled"
+                    {
+                        dbg_log(&format!(
+                            "stop: cancelling tool id={} status was {}",
+                            tool.id, tool.status
+                        ));
+                        tool.status = "cancelled".to_string();
+                        if tool.finished_at.is_none() {
+                            tool.finished_at = Some(now_ms);
+                        }
+                    }
+
+                    if let Some(call_id) = &tool.call_id {
+                        if !tab.cancelled_calls.iter().any(|c| c == call_id) {
+                            tab.cancelled_calls.push(call_id.clone());
+                        }
+                    }
+                }
+            }
+
+            if !tab
+                .cancelled_messages
+                .iter()
+                .any(|m| m == &active_id)
+            {
+                tab.cancelled_messages.push(active_id.clone());
+            }
+
+            tab.cancelled_after = Some(now_ms);
+            tab.suppress_incoming = true;
+            tab.active_assistant = None;
+        }
+    }
+
     fn render_message(
         &mut self,
-        ui: &mut egui::Ui, 
+        ui: &mut egui::Ui,
         msg: &DisplayMessage,
         session_id: Option<&str>,
     ) {
         let message_id = msg.message_id.clone();
         let available_width = ui.available_width();
         let bubble_max_width = available_width * 0.75;
-        
+
         // Determine colors and alignment
         let (bg_color, align_right) = match msg.role.as_str() {
             "user" => (egui::Color32::from_rgb(60, 100, 180), true),
             "assistant" => (egui::Color32::from_rgb(70, 70, 70), false),
             _ => (egui::Color32::from_rgb(100, 70, 120), false),
         };
-        
+
         ui.add_space(8.0);
-        
+
         // Combine text parts into a single markdown string
         let full_text = msg.text_parts.join("");
-        
+
         ui.horizontal(|ui| {
             if align_right {
                 // User messages: right-aligned
@@ -551,13 +960,16 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                         .show(ui, |ui| {
                             ui.set_max_width(bubble_max_width);
                             if !full_text.is_empty() {
-                                egui_commonmark::CommonMarkViewer::new()
-                                    .show(ui, &mut self.commonmark_cache, &full_text);
+                                egui_commonmark::CommonMarkViewer::new().show(
+                                    ui,
+                                    &mut self.commonmark_cache,
+                                    &full_text,
+                                );
                             }
                         });
-                    
+
                     ui.add_space(6.0);
-                    
+
                     if ui.button("Copy").clicked() {
                         ui.ctx().copy_text(full_text.clone());
                     }
@@ -576,8 +988,11 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                             if msg.role == "system" {
                                 egui_twemoji::EmojiLabel::new(&full_text).show(ui);
                             } else {
-                                egui_commonmark::CommonMarkViewer::new()
-                                    .show(ui, &mut self.commonmark_cache, &full_text);
+                                egui_commonmark::CommonMarkViewer::new().show(
+                                    ui,
+                                    &mut self.commonmark_cache,
+                                    &full_text,
+                                );
                             }
                         } else if msg.role == "assistant" && msg.tool_calls.is_empty() {
                             // Show spinner only when no text AND no tools (truly waiting for response)
@@ -586,100 +1001,301 @@ UiMsg::SessionCreated { tab_idx, id, title, directory } => {
                                 ui.label("Thinking...");
                             });
                         }
-                        
+
                         // Tool calls (collapsible)
                         if !msg.tool_calls.is_empty() {
                             ui.add_space(8.0);
-                            
-                            // Check if any tools are still in progress
-                            let any_in_progress = msg.tool_calls.iter().any(|t| 
-                                t.status != "success" && t.status != "error" && t.status != "completed"
-                            );
-                            
-                            // Check if any tool has a pending permission
-                            let has_pending_perm = session_id.is_some() && msg.tool_calls.iter().any(|tool| {
-                                if let Some(call_id) = &tool.call_id {
-                                    self.pending_permissions.iter().any(|p| 
-                                        p.session_id == session_id.unwrap() && p.call_id.as_deref() == Some(call_id.as_str())
-                                    )
-                                } else {
-                                    false
-                                }
+
+                            let any_in_progress = msg.tool_calls.iter().any(|t| {
+                                t.status != "success"
+                                    && t.status != "error"
+                                    && t.status != "completed"
+                                    && t.status != "cancelled"
                             });
-                            
+
+                            let has_pending_perm = session_id.is_some()
+                                && msg.tool_calls.iter().any(|tool| {
+                                    if let Some(call_id) = &tool.call_id {
+                                        return self.pending_permissions.iter().any(|p| {
+                                            p.session_id == session_id.unwrap()
+                                                && p.call_id.as_deref() == Some(call_id.as_str())
+                                        });
+                                    }
+                                    false
+                                });
+
                             ui.horizontal(|ui| {
                                 if any_in_progress {
                                     ui.spinner();
                                 }
-                                // Tool calls header with wrench emoji
-                                let header_text = format!("🔧 {} tool call(s)", msg.tool_calls.len());
+                                let header_text =
+                                    format!("🔧 {} tool call(s)", msg.tool_calls.len());
                                 egui::CollapsingHeader::new(header_text)
                                     .id_salt(&message_id)
-                                    .default_open(has_pending_perm)  // Auto-expand if permission pending
+                                    .default_open(has_pending_perm)
                                     .show(ui, |ui| {
-                                    for tool in &msg.tool_calls {
-                                        ui.vertical(|ui| {
-                                            ui.horizontal(|ui| {
-                                                let status_icon = match tool.status.as_str() {
-                                                    "success" | "completed" => "✅",
-                                                    "error" => "❌",
-                                                    _ => "⏳",
-                                                };
-                                                ui.label(&tool.name);
-                                                egui_twemoji::EmojiLabel::new(format!("{} {}", status_icon, tool.status)).show(ui);
-                                            });
+                                        for tool in &msg.tool_calls {
+                                            self.render_tool_call_detail(ui, tool);
 
-                                            // Inline permission card for this tool if pending
-                                            if let (Some(sid), Some(call)) = (session_id, &tool.call_id) {
+                                            if let (Some(sid), Some(call)) =
+                                                (session_id, &tool.call_id)
+                                            {
                                                 let perm_opt = self
                                                     .pending_permissions
                                                     .iter()
-                                                    .find(|p| p.session_id == sid && p.call_id.as_deref() == Some(call.as_str()))
+                                                    .find(|p| {
+                                                        p.session_id == sid
+                                                            && p.call_id.as_deref()
+                                                                == Some(call.as_str())
+                                                    })
                                                     .cloned();
                                                 if let Some(perm) = perm_opt {
                                                     ui.add_space(4.0);
                                                     egui::Frame::none()
                                                         .fill(egui::Color32::from_gray(40))
-                                                        .inner_margin(egui::Margin::symmetric(8i8, 6i8))
+                                                        .inner_margin(egui::Margin::symmetric(
+                                                            8i8, 6i8,
+                                                        ))
                                                         .show(ui, |ui| {
-                                                            ui.label(format!("Permission required: {}", perm.title));
-                                                            ui.small(format!("Type: {}", perm.perm_type));
+                                                            ui.label(format!(
+                                                                "Permission required: {}",
+                                                                perm.title
+                                                            ));
+                                                            ui.small(format!(
+                                                                "Type: {}",
+                                                                perm.perm_type
+                                                            ));
                                                             ui.add_space(6.0);
                                                             ui.horizontal(|ui| {
-                                                                if ui.button("❌ Reject").clicked() {
-                                                                    self.action_respond_permission(perm.session_id.clone(), perm.id.clone(), "reject");
-                                                                    if let Some(idx) = self.pending_permissions.iter().position(|p| p.id == perm.id) { self.pending_permissions.remove(idx); }
+                                                                if ui.button("❌ Reject").clicked()
+                                                                {
+                                                                    self.action_respond_permission(
+                                                                        perm.session_id.clone(),
+                                                                        perm.id.clone(),
+                                                                        "reject",
+                                                                    );
+                                                                    if let Some(idx) = self
+                                                                        .pending_permissions
+                                                                        .iter()
+                                                                        .position(|p| {
+                                                                            p.id == perm.id
+                                                                        })
+                                                                    {
+                                                                        self.pending_permissions
+                                                                            .remove(idx);
+                                                                    }
                                                                 }
-                                                                if ui.button("✅ Allow Once").clicked() {
-                                                                    self.action_respond_permission(perm.session_id.clone(), perm.id.clone(), "once");
-                                                                    if let Some(idx) = self.pending_permissions.iter().position(|p| p.id == perm.id) { self.pending_permissions.remove(idx); }
+                                                                if ui
+                                                                    .button("✅ Allow Once")
+                                                                    .clicked()
+                                                                {
+                                                                    self.action_respond_permission(
+                                                                        perm.session_id.clone(),
+                                                                        perm.id.clone(),
+                                                                        "once",
+                                                                    );
+                                                                    if let Some(idx) = self
+                                                                        .pending_permissions
+                                                                        .iter()
+                                                                        .position(|p| {
+                                                                            p.id == perm.id
+                                                                        })
+                                                                    {
+                                                                        self.pending_permissions
+                                                                            .remove(idx);
+                                                                    }
                                                                 }
-                                                                if ui.button("✅ Always Allow").clicked() {
-                                                                    self.action_respond_permission(perm.session_id.clone(), perm.id.clone(), "always");
-                                                                    if let Some(idx) = self.pending_permissions.iter().position(|p| p.id == perm.id) { self.pending_permissions.remove(idx); }
+                                                                if ui
+                                                                    .button("✅ Always Allow")
+                                                                    .clicked()
+                                                                {
+                                                                    self.action_respond_permission(
+                                                                        perm.session_id.clone(),
+                                                                        perm.id.clone(),
+                                                                        "always",
+                                                                    );
+                                                                    if let Some(idx) = self
+                                                                        .pending_permissions
+                                                                        .iter()
+                                                                        .position(|p| {
+                                                                            p.id == perm.id
+                                                                        })
+                                                                    {
+                                                                        self.pending_permissions
+                                                                            .remove(idx);
+                                                                    }
                                                                 }
                                                             });
                                                         });
                                                 }
                                             }
-                                        });
-                                    }
-                                });
+                                        }
+                                    });
                             });
                         }
                     });
-                
+
                 ui.add_space(6.0);
-                
+
                 if ui.button("Copy").clicked() {
                     ui.ctx().copy_text(full_text.clone());
                 }
             }
         });
-        
+
         ui.add_space(4.0);
     }
-    
+
+    fn render_tool_call_detail(&self, ui: &mut egui::Ui, tool: &ToolCall) {
+        ui.group(|ui| {
+            ui.set_min_width(ui.available_width());
+
+            ui.horizontal(|ui| {
+                let status_icon = match tool.status.as_str() {
+                    "success" | "completed" => "✅",
+                    "error" => "❌",
+                    _ => "⏳",
+                };
+                ui.label(&tool.name);
+                egui_twemoji::EmojiLabel::new(status_icon).show(ui);
+                ui.label(&tool.status);
+
+                if let (Some(start), Some(end)) = (tool.started_at, tool.finished_at) {
+                    let duration_ms = end - start;
+                    ui.label(format!("({:.1}s)", duration_ms as f64 / 1000.0));
+                } else if tool.started_at.is_some() {
+                    ui.label("(in progress)");
+                }
+
+                if let Some(call_id) = &tool.call_id {
+                    ui.small(format!("ID: {call_id}"));
+                }
+            });
+
+            if let Some(command) = Self::extract_field_as_string(&tool.input, "command") {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Command").strong());
+                ui.indent("tool_command", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.monospace(&command);
+                        if ui.small_button("Copy").clicked() {
+                            ui.ctx().copy_text(command.clone());
+                        }
+                    });
+                });
+            }
+
+            if let Some(url) = Self::extract_field_as_string(&tool.input, "url") {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("URL").strong());
+                ui.indent("tool_url", |ui| {
+                    ui.horizontal(|ui| {
+                        ui.monospace(&url);
+                        if ui.small_button("Copy").clicked() {
+                            ui.ctx().copy_text(url.clone());
+                        }
+                    });
+                });
+            }
+
+            if !tool.input.is_null() {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Parameters").strong());
+                ui.indent("tool_params", |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(160.0)
+                        .show(ui, |ui| {
+                            ui.monospace(Self::format_json_value(&tool.input));
+                        });
+                });
+            }
+
+            if !tool.metadata.is_empty() {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Metadata").strong());
+                ui.indent("tool_meta", |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(120.0)
+                        .show(ui, |ui| {
+                            ui.monospace(Self::format_json_map(&tool.metadata));
+                        });
+                });
+            }
+
+            if !tool.logs.is_empty() {
+                ui.add_space(4.0);
+                egui::CollapsingHeader::new("Logs")
+                    .id_salt(format!("{}_logs", tool.id))
+                    .show(ui, |ui| {
+                        for log in &tool.logs {
+                            ui.label(egui::RichText::new(log).monospace().small());
+                        }
+                    });
+            }
+
+            if let Some(error) = &tool.error {
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("Error")
+                        .strong()
+                        .color(egui::Color32::RED),
+                );
+                ui.indent("tool_error", |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(160.0)
+                        .show(ui, |ui| {
+                            ui.monospace(error);
+                        });
+                });
+                return;
+            }
+
+            if let Some(output) = &tool.output {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("Output").strong());
+                ui.indent("tool_output", |ui| {
+                    egui::ScrollArea::vertical()
+                        .max_height(200.0)
+                        .show(ui, |ui| {
+                            ui.monospace(output);
+                        });
+                    if ui.small_button("Copy output").clicked() {
+                        ui.ctx().copy_text(output.clone());
+                    }
+                });
+            }
+        });
+
+        ui.add_space(6.0);
+    }
+
+    fn extract_field_as_string(value: &serde_json::Value, key: &str) -> Option<String> {
+        value
+            .as_object()
+            .and_then(|obj| obj.get(key))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+    }
+
+    fn format_json_value(value: &serde_json::Value) -> String {
+        match value {
+            serde_json::Value::String(s) => format!("\"{s}\""),
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            serde_json::Value::Null => "null".to_string(),
+            other => format!("{other}"),
+        }
+    }
+
+    fn format_json_map(map: &serde_json::Map<String, serde_json::Value>) -> String {
+        let mut entries: Vec<String> = map
+            .iter()
+            .map(|(k, v)| format!("{k}: {}", Self::format_json_value(v)))
+            .collect();
+        entries.sort();
+        entries.join("\n")
+    }
+
     fn action_start_only(&mut self, ctx: &egui::Context) {
         if self.server_in_flight || self.runtime.is_none() {
             return;
@@ -738,7 +1354,7 @@ impl eframe::App for OpenCodeApp {
         // - (Idle, key_down) -> Recording + send StartRecording
         // - (Recording, key_up) -> Idle + send StopRecording
         // - All other transitions ignored (prevents double-triggers)
-        
+
         // Only process if audio task is running
         if self.audio_tx.is_none() {
             // Debug: Check if AltRight is being pressed
@@ -746,26 +1362,34 @@ impl eframe::App for OpenCodeApp {
                 if let egui::Event::Key { key, pressed, .. } = event {
                     let key_name = format!("{:?}", key);
                     if key_name == "AltRight" && *pressed {
-                        eprintln!("AltRight pressed but audio task not running (no model configured)");
+                        eprintln!(
+                            "AltRight pressed but audio task not running (no model configured)"
+                        );
                     }
                 }
             }
             return;
         }
-        
+
         for event in &raw_input.events {
-            if let egui::Event::Key { key, pressed, repeat, .. } = event {
+            if let egui::Event::Key {
+                key,
+                pressed,
+                repeat,
+                ..
+            } = event
+            {
                 // Ignore key repeats
                 if *repeat {
                     continue;
                 }
-                
+
                 // Check if this is our push-to-talk key
                 let key_name = format!("{:?}", key);
                 if key_name != self.config.audio.push_to_talk_key {
                     continue;
                 }
-                
+
                 // State machine
                 match (self.recording_state, *pressed) {
                     (RecordingState::Idle, true) => {
@@ -789,38 +1413,57 @@ impl eframe::App for OpenCodeApp {
             }
         }
     }
-    
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Start server discovery on first frame (lazy init)
         if !self.discovery_started {
             self.start_server_discovery(ctx);
         }
-        
+
         // Drain async messages (SSE-fed channel)
         self.drain_ui_msgs(ctx);
-        
+
         // Auto-create first tab when client is ready
-        if self.tabs.is_empty() && self.client.is_some() && self.runtime.is_some() && self.ui_tx.is_some() {
+        if self.tabs.is_empty()
+            && self.client.is_some()
+            && self.runtime.is_some()
+            && self.ui_tx.is_some()
+        {
             let tab_idx = 0;
-self.tabs.push(Tab { 
-                title: "(creating…)".to_string(), 
+            self.tabs.push(Tab {
+                title: "(creating…)".to_string(),
                 session_id: None,
-                directory: None, 
+                directory: None,
                 messages: Vec::new(),
+                active_assistant: None,
                 input: String::new(),
                 selected_model: None,
+                cancelled_messages: Vec::new(),
+                cancelled_calls: Vec::new(),
+                cancelled_after: None,
+                suppress_incoming: false,
+                last_send_at: 0,
             });
             self.active = 0;
-            
+
             let txc = self.ui_tx.as_ref().unwrap().clone();
             let c = self.client.as_ref().unwrap().clone();
             let egui_ctx = ctx.clone();
             let rt = self.runtime.as_ref().unwrap().clone();
-            
+
             rt.spawn(async move {
-match c.create_session(None).await {
-                    Ok(info) => { let _ = txc.send(UiMsg::SessionCreated { tab_idx, id: info.id, title: info.title, directory: info.directory }); }
-                    Err(e) => { let _ = txc.send(UiMsg::ServerError(e.to_string())); }
+                match c.create_session(None).await {
+                    Ok(info) => {
+                        let _ = txc.send(UiMsg::SessionCreated {
+                            tab_idx,
+                            id: info.id,
+                            title: info.title,
+                            directory: info.directory,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = txc.send(UiMsg::ServerError(e.to_string()));
+                    }
                 }
                 egui_ctx.request_repaint();
             });
@@ -833,37 +1476,41 @@ match c.create_session(None).await {
                 let mut to_close: Option<usize> = None;
                 let mut rename_action: Option<(usize, String)> = None;
                 let mut cancel_rename = false;
-                
+
                 let mut model_changed: Option<(usize, Option<(String, String)>)> = None;
                 for (i, tab) in self.tabs.iter().enumerate() {
                     let selected = self.active == i;
-                    
+
                     // Group tab label, model selector, and close button together
                     ui.group(|ui| {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
-                            
+
                             // Check if this tab is being renamed
                             if self.renaming_tab == Some(i) {
                                 let text_edit = egui::TextEdit::singleline(&mut self.rename_buffer);
                                 let response = text_edit.show(ui).response;
-                                
+
                                 // Request focus and select all text on first frame only
                                 let id = response.id;
                                 response.request_focus();
                                 if response.has_focus() && !self.rename_text_selected {
                                     // Select all text (only once)
-                                    if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+                                    if let Some(mut state) =
+                                        egui::TextEdit::load_state(ui.ctx(), id)
+                                    {
                                         let text_len = self.rename_buffer.len();
-                                        state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
-                                            egui::text::CCursor::new(0),
-                                            egui::text::CCursor::new(text_len),
-                                        )));
+                                        state.cursor.set_char_range(Some(
+                                            egui::text::CCursorRange::two(
+                                                egui::text::CCursor::new(0),
+                                                egui::text::CCursor::new(text_len),
+                                            ),
+                                        ));
                                         state.store(ui.ctx(), id);
                                         self.rename_text_selected = true;
                                     }
                                 }
-                                
+
                                 // Confirm on Enter or Tab
                                 let enter_pressed = ui.input(|i| i.key_pressed(egui::Key::Enter));
                                 let tab_pressed = ui.input(|i| i.key_pressed(egui::Key::Tab));
@@ -871,7 +1518,7 @@ match c.create_session(None).await {
                                 let lost_focus = response.lost_focus();
                                 // Cancel on Escape
                                 let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
-                                
+
                                 if escape_pressed {
                                     cancel_rename = true;
                                 } else if enter_pressed || tab_pressed || lost_focus {
@@ -882,11 +1529,11 @@ match c.create_session(None).await {
                                 }
                             } else {
                                 let response = ui.selectable_label(selected, &tab.title);
-                                
+
                                 if response.clicked() {
                                     self.active = i;
                                 }
-                                
+
                                 // Right-click context menu
                                 response.context_menu(|ui| {
                                     if ui.button("Rename").clicked() {
@@ -897,52 +1544,81 @@ match c.create_session(None).await {
                                     }
                                 });
                             }
-                            
+
                             // Model selector dropdown
                             if !self.models_config.get_curated_models().is_empty() {
                                 ui.separator();
-                                
+
                                 // Display current model or default
-                                let current_display = if let Some((provider, model_id)) = &tab.selected_model {
-                                    // Find model name from curated list
-                                    self.models_config.get_curated_models()
-                                        .iter()
-                                        .find(|m| &m.provider == provider && &m.model_id == model_id)
-                                        .map(|m| m.name.clone())
-                                        .unwrap_or_else(|| format!("{provider}/{model_id}"))
-                                } else {
-                                    match &self.auth_sync_state.status {
-                                        crate::startup::auth::AuthSyncStatus::InProgress => "⏳".to_string(),
-                                        crate::startup::auth::AuthSyncStatus::Complete => "(default)".to_string(),
-                                        crate::startup::auth::AuthSyncStatus::Failed(_) => "❌".to_string(),
-                                        _ => "...".to_string(),
-                                    }
-                                };
-                                
+                                let current_display =
+                                    if let Some((provider, model_id)) = &tab.selected_model {
+                                        // Find model name from curated list
+                                        self.models_config
+                                            .get_curated_models()
+                                            .iter()
+                                            .find(|m| {
+                                                &m.provider == provider && &m.model_id == model_id
+                                            })
+                                            .map(|m| m.name.clone())
+                                            .unwrap_or_else(|| format!("{provider}/{model_id}"))
+                                    } else {
+                                        match &self.auth_sync_state.status {
+                                            crate::startup::auth::AuthSyncStatus::InProgress => {
+                                                "⏳".to_string()
+                                            }
+                                            crate::startup::auth::AuthSyncStatus::Complete => {
+                                                "(default)".to_string()
+                                            }
+                                            crate::startup::auth::AuthSyncStatus::Failed(_) => {
+                                                "❌".to_string()
+                                            }
+                                            _ => "...".to_string(),
+                                        }
+                                    };
+
                                 egui::ComboBox::from_id_salt(format!("model_selector_{i}"))
                                     .selected_text(current_display)
                                     .width(120.0)
                                     .show_ui(ui, |ui| {
                                         // Option to use default model
-                                        if ui.selectable_label(tab.selected_model.is_none(), "(use default)").clicked() {
+                                        if ui
+                                            .selectable_label(
+                                                tab.selected_model.is_none(),
+                                                "(use default)",
+                                            )
+                                            .clicked()
+                                        {
                                             model_changed = Some((i, None));
                                         }
-                                        
+
                                         ui.separator();
-                                        
+
                                         // Show curated models
                                         for model in self.models_config.get_curated_models() {
-                                            let is_selected = tab.selected_model.as_ref()
-                                                .map(|(p, m)| p == &model.provider && m == &model.model_id)
+                                            let is_selected = tab
+                                                .selected_model
+                                                .as_ref()
+                                                .map(|(p, m)| {
+                                                    p == &model.provider && m == &model.model_id
+                                                })
                                                 .unwrap_or(false);
-                                            
-                                            if ui.selectable_label(is_selected, &model.name).clicked() {
-                                                model_changed = Some((i, Some((model.provider.clone(), model.model_id.clone()))));
+
+                                            if ui
+                                                .selectable_label(is_selected, &model.name)
+                                                .clicked()
+                                            {
+                                                model_changed = Some((
+                                                    i,
+                                                    Some((
+                                                        model.provider.clone(),
+                                                        model.model_id.clone(),
+                                                    )),
+                                                ));
                                             }
                                         }
-                                        
+
                                         ui.separator();
-                                        
+
                                         // Link to manage models
                                         if ui.small_button("⚙ Manage Models").clicked() {
                                             self.show_settings = true;
@@ -950,14 +1626,14 @@ match c.create_session(None).await {
                                         }
                                     });
                             }
-                            
+
                             if ui.small_button("X").clicked() {
                                 to_close = Some(i);
                             }
                         });
                     });
                 }
-                
+
                 // Apply deferred actions
                 if let Some((idx, model)) = model_changed {
                     if let Some(tab) = self.tabs.get_mut(idx) {
@@ -992,23 +1668,40 @@ match c.create_session(None).await {
                 }
                 if ui.button("+").clicked() {
                     let tab_idx = self.tabs.len();
-self.tabs.push(Tab { 
-                        title: "(creating…)".to_string(), 
+                    self.tabs.push(Tab {
+                        title: "(creating…)".to_string(),
                         session_id: None,
-                        directory: None, 
+                        directory: None,
                         messages: Vec::new(),
+                        active_assistant: None,
                         input: String::new(),
                         selected_model: None,
+                        cancelled_messages: Vec::new(),
+                        cancelled_calls: Vec::new(),
+                        cancelled_after: None,
+                        suppress_incoming: false,
+                        last_send_at: 0,
                     });
                     self.active = tab_idx;
-                    if let (Some(rt), Some(tx), Some(client)) = (&self.runtime, &self.ui_tx, &self.client) {
+                    if let (Some(rt), Some(tx), Some(client)) =
+                        (&self.runtime, &self.ui_tx, &self.client)
+                    {
                         let txc = tx.clone();
                         let c = client.clone();
                         let egui_ctx = ctx.clone();
                         rt.spawn(async move {
-match c.create_session(None).await {
-                                Ok(info) => { let _ = txc.send(UiMsg::SessionCreated { tab_idx, id: info.id, title: info.title, directory: info.directory }); }
-                                Err(e) => { let _ = txc.send(UiMsg::ServerError(e.to_string())); }
+                            match c.create_session(None).await {
+                                Ok(info) => {
+                                    let _ = txc.send(UiMsg::SessionCreated {
+                                        tab_idx,
+                                        id: info.id,
+                                        title: info.title,
+                                        directory: info.directory,
+                                    });
+                                }
+                                Err(e) => {
+                                    let _ = txc.send(UiMsg::ServerError(e.to_string()));
+                                }
                             }
                             egui_ctx.request_repaint();
                         });
@@ -1025,7 +1718,7 @@ match c.create_session(None).await {
                 } else {
                     ui.label("Server: not connected");
                 }
-                
+
                 // Settings button
                 if ui.button("⚙ Settings").clicked() {
                     self.show_settings = !self.show_settings;
@@ -1037,7 +1730,7 @@ match c.create_session(None).await {
         let mut reconnect_requested = false;
         let mut start_requested = false;
         let mut stop_requested = false;
-        
+
         if self.show_settings {
             egui::Window::new("Settings")
                 .open(&mut self.show_settings)
@@ -1048,7 +1741,7 @@ match c.create_session(None).await {
                         ui.collapsing("Server Preferences", |ui| {
                             ui.heading("Server Connection");
                             ui.separator();
-                            
+
                             // Manual URL override
                             ui.horizontal(|ui| {
                                 ui.label("Base URL:");
@@ -1064,90 +1757,128 @@ match c.create_session(None).await {
                                 ui.text_edit_singleline(&mut self.directory_input);
                             });
                             ui.small("Optional. Sends as x-opencode-directory header.");
-                            
+
                             ui.add_space(8.0);
-                            
+
                             // Auto-start toggle
-                            ui.checkbox(&mut self.config.server.auto_start, "Auto-start server on launch");
-                            
+                            ui.checkbox(
+                                &mut self.config.server.auto_start,
+                                "Auto-start server on launch",
+                            );
+
                             ui.add_space(8.0);
                             ui.separator();
-                            
+
                             // Discovery diagnostics
                             if let Some(info) = &self.server {
-                                ui.label(format!("Connected: {} (PID {})", info.base_url, info.pid));
+                                ui.label(format!(
+                                    "Connected: {} (PID {})",
+                                    info.base_url, info.pid
+                                ));
                                 ui.label(format!("Owned: {}", info.owned));
                             } else {
                                 ui.label("Status: Not connected");
                             }
-                            let dir_label = if self.directory_input.trim().is_empty() { "(none)".to_string() } else { self.directory_input.clone() };
+                            let dir_label = if self.directory_input.trim().is_empty() {
+                                "(none)".to_string()
+                            } else {
+                                self.directory_input.clone()
+                            };
                             ui.label(format!("Directory header: {}", dir_label));
-                            
+
                             ui.add_space(8.0);
-                            
+
                             // Server actions
                             ui.horizontal(|ui| {
                                 if ui.button("Reconnect").clicked() {
                                     reconnect_requested = true;
                                 }
-                                
+
                                 if ui.button("Start Server").clicked() {
                                     start_requested = true;
                                 }
-                                
+
                                 if let Some(info) = &self.server {
                                     if info.owned && ui.button("Stop Server").clicked() {
                                         stop_requested = true;
                                     }
                                 }
                             });
-                            
+
                             ui.add_space(8.0);
-                            
+
                             // Save button for server settings
                             if ui.button("Save Server Settings").clicked() {
                                 // Update config from input
                                 if self.base_url_input.trim().is_empty() {
                                     self.config.server.last_base_url = None;
                                 } else {
-                                    self.config.server.last_base_url = Some(self.base_url_input.clone());
+                                    self.config.server.last_base_url =
+                                        Some(self.base_url_input.clone());
                                 }
                                 // Update directory override
                                 if self.directory_input.trim().is_empty() {
                                     self.config.server.directory_override = None;
                                 } else {
-                                    self.config.server.directory_override = Some(self.directory_input.clone());
+                                    self.config.server.directory_override =
+                                        Some(self.directory_input.clone());
                                 }
                                 // Apply to live client
                                 if let Some(c) = &mut self.client {
-                                    c.directory = self.config.server.directory_override.as_ref().map(|s| std::path::PathBuf::from(s));
+                                    c.directory = self
+                                        .config
+                                        .server
+                                        .directory_override
+                                        .as_ref()
+                                        .map(|s| std::path::PathBuf::from(s));
                                 }
                                 self.config.save();
                             }
                         });
-                        
+
                         ui.add_space(16.0);
-                        
+
                         // UI Preferences Section
                         ui.collapsing("UI Preferences", |ui| {
                             ui.heading("Appearance");
                             ui.separator();
-                            
+
                             // Font size preset
                             ui.label("Font Size:");
                             let mut font_changed = false;
                             ui.horizontal(|ui| {
-                                if ui.radio_value(&mut self.config.ui.font_size, crate::config::FontSizePreset::Small, "Small").clicked() {
+                                if ui
+                                    .radio_value(
+                                        &mut self.config.ui.font_size,
+                                        crate::config::FontSizePreset::Small,
+                                        "Small",
+                                    )
+                                    .clicked()
+                                {
                                     font_changed = true;
                                 }
-                                if ui.radio_value(&mut self.config.ui.font_size, crate::config::FontSizePreset::Standard, "Standard").clicked() {
+                                if ui
+                                    .radio_value(
+                                        &mut self.config.ui.font_size,
+                                        crate::config::FontSizePreset::Standard,
+                                        "Standard",
+                                    )
+                                    .clicked()
+                                {
                                     font_changed = true;
                                 }
-                                if ui.radio_value(&mut self.config.ui.font_size, crate::config::FontSizePreset::Large, "Large").clicked() {
+                                if ui
+                                    .radio_value(
+                                        &mut self.config.ui.font_size,
+                                        crate::config::FontSizePreset::Large,
+                                        "Large",
+                                    )
+                                    .clicked()
+                                {
                                     font_changed = true;
                                 }
                             });
-                            
+
                             // Apply font changes immediately
                             if font_changed {
                                 self.config.ui.apply_to_context(ctx);
@@ -1159,74 +1890,103 @@ match c.create_session(None).await {
                             // Base font size (pt)
                             ui.label("Base font (pt):");
                             let resp = ui.add(
-                                egui::Slider::new(&mut self.config.ui.base_font_points, 10.0..=24.0)
-                                    .text("Base (pt)")
+                                egui::Slider::new(
+                                    &mut self.config.ui.base_font_points,
+                                    10.0..=24.0,
+                                )
+                                .text("Base (pt)"),
                             );
                             if resp.changed() {
                                 self.config.ui.apply_to_context(ctx);
                                 self.config.save();
                             }
-                            
+
                             ui.add_space(8.0);
-                            
+
                             // Chat density
                             ui.label("Chat Density:");
                             let mut density_changed = false;
                             ui.horizontal(|ui| {
-                                if ui.radio_value(&mut self.config.ui.chat_density, crate::config::ChatDensity::Compact, "Compact").clicked() {
+                                if ui
+                                    .radio_value(
+                                        &mut self.config.ui.chat_density,
+                                        crate::config::ChatDensity::Compact,
+                                        "Compact",
+                                    )
+                                    .clicked()
+                                {
                                     density_changed = true;
                                 }
-                                if ui.radio_value(&mut self.config.ui.chat_density, crate::config::ChatDensity::Normal, "Normal").clicked() {
+                                if ui
+                                    .radio_value(
+                                        &mut self.config.ui.chat_density,
+                                        crate::config::ChatDensity::Normal,
+                                        "Normal",
+                                    )
+                                    .clicked()
+                                {
                                     density_changed = true;
                                 }
-                                if ui.radio_value(&mut self.config.ui.chat_density, crate::config::ChatDensity::Comfortable, "Comfortable").clicked() {
+                                if ui
+                                    .radio_value(
+                                        &mut self.config.ui.chat_density,
+                                        crate::config::ChatDensity::Comfortable,
+                                        "Comfortable",
+                                    )
+                                    .clicked()
+                                {
                                     density_changed = true;
                                 }
                             });
-                            
+
                             // Save density changes
                             if density_changed {
                                 self.config.save();
                             }
                         });
-                        
+
                         ui.add_space(16.0);
-                        
+
                         // Models Section
                         ui.collapsing("Models", |ui| {
                             ui.heading("Curated Models");
                             ui.separator();
-                            
+
                             ui.label("Your curated models:");
                             ui.add_space(8.0);
-                            
+
                             // Display curated models with remove buttons
                             let mut model_to_remove: Option<(String, String)> = None;
                             for model in self.models_config.get_curated_models() {
                                 ui.horizontal(|ui| {
-                                    ui.label(format!("{}  ({}/{})", model.name, model.provider, model.model_id));
+                                    ui.label(format!(
+                                        "{}  ({}/{})",
+                                        model.name, model.provider, model.model_id
+                                    ));
                                     if ui.small_button("✖").clicked() {
-                                        model_to_remove = Some((model.provider.clone(), model.model_id.clone()));
+                                        model_to_remove =
+                                            Some((model.provider.clone(), model.model_id.clone()));
                                     }
                                 });
                             }
-                            
+
                             // Remove model if requested (deferred to avoid borrow issues)
                             if let Some((provider, model_id)) = model_to_remove {
-                                self.models_config.remove_curated_model(&provider, &model_id);
+                                self.models_config
+                                    .remove_curated_model(&provider, &model_id);
                                 let _ = self.models_config.save();
                             }
-                            
+
                             ui.add_space(8.0);
-                            
+
                             // Add Model button
                             if ui.button("+ Add Model").clicked() {
                                 self.show_model_discovery = true;
                             }
-                            
+
                             ui.add_space(16.0);
                             ui.separator();
-                            
+
                             // Default model selector
                             ui.label("Default model for new tabs:");
                             let current_default = self.models_config.models.default_model.clone();
@@ -1235,15 +1995,23 @@ match c.create_session(None).await {
                                 .selected_text(&current_default)
                                 .show_ui(ui, |ui| {
                                     for model in &curated_models {
-                                        let model_id = format!("{}/{}", model.provider, model.model_id);
-                                        if ui.selectable_value(&mut self.models_config.models.default_model, model_id.clone(), &model.name).clicked() {
+                                        let model_id =
+                                            format!("{}/{}", model.provider, model.model_id);
+                                        if ui
+                                            .selectable_value(
+                                                &mut self.models_config.models.default_model,
+                                                model_id.clone(),
+                                                &model.name,
+                                            )
+                                            .clicked()
+                                        {
                                             let _ = self.models_config.save();
                                         }
                                     }
                                 });
-                            
+
                             ui.add_space(8.0);
-                            
+
                             // Auth sync status display
                             ui.separator();
                             ui.label("API Key Sync Status:");
@@ -1257,23 +2025,34 @@ match c.create_session(None).await {
                                 crate::startup::auth::AuthSyncStatus::Complete => {
                                     ui.label("✅ Complete");
                                     if !self.auth_sync_state.synced_providers.is_empty() {
-                                        ui.small(format!("Synced: {}", self.auth_sync_state.synced_providers.join(", ")));
+                                        ui.small(format!(
+                                            "Synced: {}",
+                                            self.auth_sync_state.synced_providers.join(", ")
+                                        ));
                                     }
                                     if !self.auth_sync_state.failed_providers.is_empty() {
-                                        for (provider, error) in &self.auth_sync_state.failed_providers {
-                                            ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("❌ {provider}: {error}"));
+                                        for (provider, error) in
+                                            &self.auth_sync_state.failed_providers
+                                        {
+                                            ui.colored_label(
+                                                egui::Color32::from_rgb(255, 100, 100),
+                                                format!("❌ {provider}: {error}"),
+                                            );
                                         }
                                     }
                                 }
                                 crate::startup::auth::AuthSyncStatus::Failed(err) => {
-                                    ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("❌ Failed: {err}"));
+                                    ui.colored_label(
+                                        egui::Color32::from_rgb(255, 100, 100),
+                                        format!("❌ Failed: {err}"),
+                                    );
                                 }
                             }
                         });
                     });
                 });
         }
-        
+
         // Model Discovery Window
         if self.show_model_discovery {
             let mut close_requested = false;
@@ -1286,42 +2065,56 @@ match c.create_session(None).await {
                             ui.heading("Select a provider:");
                             ui.separator();
                             ui.add_space(8.0);
-                            
+
                             for provider in self.models_config.get_providers() {
                                 if ui.button(&provider.display_name).clicked() {
                                     self.discovery_provider = Some(provider.name.clone());
                                     self.discovery_in_progress = true;
                                     self.discovery_error = None;
                                     self.discovery_models.clear();
-                                    
+
                                     // Spawn async task to discover models
                                     if let (Some(rt), Some(tx)) = (&self.runtime, &self.ui_tx) {
                                         let provider_config = provider.clone();
                                         let tx = tx.clone();
                                         let egui_ctx = ctx.clone();
-                                        
+
                                         // Get API key from environment
-                                        if let Ok(api_key) = std::env::var(&provider_config.api_key_env) {
+                                        if let Ok(api_key) =
+                                            std::env::var(&provider_config.api_key_env)
+                                        {
                                             rt.spawn(async move {
-                                                let provider_client = crate::client::providers::ProviderClient::new().unwrap();
-                                                match provider_client.discover_models(&provider_config, &api_key).await {
+                                                let provider_client =
+                                                    crate::client::providers::ProviderClient::new()
+                                                        .unwrap();
+                                                match provider_client
+                                                    .discover_models(&provider_config, &api_key)
+                                                    .await
+                                                {
                                                     Ok(models) => {
-                                                        let _ = tx.send(UiMsg::ModelsDiscovered(models));
+                                                        let _ = tx
+                                                            .send(UiMsg::ModelsDiscovered(models));
                                                     }
                                                     Err(e) => {
-                                                        let _ = tx.send(UiMsg::ModelDiscoveryError(e.to_string()));
+                                                        let _ =
+                                                            tx.send(UiMsg::ModelDiscoveryError(
+                                                                e.to_string(),
+                                                            ));
                                                     }
                                                 }
                                                 egui_ctx.request_repaint();
                                             });
                                         } else {
-                                            self.discovery_error = Some(format!("API key not found: {}", provider_config.api_key_env));
+                                            self.discovery_error = Some(format!(
+                                                "API key not found: {}",
+                                                provider_config.api_key_env
+                                            ));
                                             self.discovery_in_progress = false;
                                         }
                                     }
                                 }
                             }
-                            
+
                             ui.add_space(8.0);
                             if ui.button("Cancel").clicked() {
                                 close_requested = true;
@@ -1333,7 +2126,7 @@ match c.create_session(None).await {
                             ui.heading(format!("Add Model from {provider_name}"));
                             ui.separator();
                             ui.add_space(8.0);
-                            
+
                             // Show loading spinner or error
                             if self.discovery_in_progress {
                                 ui.horizontal(|ui| {
@@ -1341,7 +2134,10 @@ match c.create_session(None).await {
                                     ui.label("Discovering models...");
                                 });
                             } else if let Some(error) = &self.discovery_error {
-                                ui.colored_label(egui::Color32::from_rgb(255, 100, 100), format!("Error: {error}"));
+                                ui.colored_label(
+                                    egui::Color32::from_rgb(255, 100, 100),
+                                    format!("Error: {error}"),
+                                );
                             } else if !self.discovery_models.is_empty() {
                                 // Search box
                                 ui.horizontal(|ui| {
@@ -1349,20 +2145,26 @@ match c.create_session(None).await {
                                     ui.text_edit_singleline(&mut self.discovery_search);
                                 });
                                 ui.add_space(8.0);
-                                
+
                                 // Filter models by search
                                 let search_lower = self.discovery_search.to_lowercase();
-                                let filtered_models: Vec<_> = self.discovery_models.iter()
-                                    .filter(|m| search_lower.is_empty() || 
-                                             m.id.to_lowercase().contains(&search_lower) || 
-                                             m.name.to_lowercase().contains(&search_lower))
+                                let filtered_models: Vec<_> = self
+                                    .discovery_models
+                                    .iter()
+                                    .filter(|m| {
+                                        search_lower.is_empty()
+                                            || m.id.to_lowercase().contains(&search_lower)
+                                            || m.name.to_lowercase().contains(&search_lower)
+                                    })
                                     .cloned()
                                     .collect();
-                                
+
                                 ui.label(format!("{} models found:", filtered_models.len()));
                                 ui.separator();
-                                
-                                let mut model_to_add: Option<crate::client::providers::DiscoveredModel> = None;
+
+                                let mut model_to_add: Option<
+                                    crate::client::providers::DiscoveredModel,
+                                > = None;
                                 egui::ScrollArea::vertical()
                                     .max_height(300.0)
                                     .show(ui, |ui| {
@@ -1375,7 +2177,7 @@ match c.create_session(None).await {
                                             });
                                         }
                                     });
-                                
+
                                 // Add model if requested (deferred to avoid borrow issues)
                                 if let Some(model) = model_to_add {
                                     let curated_model = crate::config::models::CuratedModel::new(
@@ -1385,7 +2187,7 @@ match c.create_session(None).await {
                                     );
                                     self.models_config.add_curated_model(curated_model);
                                     let _ = self.models_config.save();
-                                    
+
                                     // Show success and close
                                     close_requested = true;
                                     self.discovery_provider = None;
@@ -1393,7 +2195,7 @@ match c.create_session(None).await {
                                     self.discovery_search.clear();
                                 }
                             }
-                            
+
                             ui.add_space(8.0);
                             ui.horizontal(|ui| {
                                 if ui.button("Back").clicked() {
@@ -1414,7 +2216,7 @@ match c.create_session(None).await {
                             });
                         }
                     });
-                    
+
                     // Close button
                     ui.horizontal(|ui| {
                         if ui.button("✖ Close").clicked() {
@@ -1422,12 +2224,12 @@ match c.create_session(None).await {
                         }
                     });
                 });
-            
+
             if close_requested {
                 self.show_model_discovery = false;
             }
         }
-        
+
         // Execute deferred actions
         if reconnect_requested {
             self.action_reconnect(ctx);
@@ -1450,13 +2252,21 @@ match c.create_session(None).await {
                 if let Some(tab) = self.tabs.get_mut(self.active) {
                     let has_session = tab.session_id.is_some();
                     let session_id = tab.session_id.clone();
-                    let blocked = session_id.as_ref().and_then(|sid| self.pending_permissions.iter().find(|p| p.session_id == *sid)).is_some();
-                    
+                    let blocked = session_id
+                        .as_ref()
+                        .and_then(|sid| {
+                            self.pending_permissions
+                                .iter()
+                                .find(|p| p.session_id == *sid)
+                        })
+                        .is_some();
+                    let streaming = tab.active_assistant.is_some();
+
                     ui.horizontal(|ui| {
                         // Text input
                         let text_height = ui.text_style_height(&egui::TextStyle::Body) * 3.0;
                         let available_width = ui.available_width() - 100.0; // Leave room for button
-                        
+
                         egui::ScrollArea::vertical()
                             .max_height(text_height * 3.0)
                             .show(ui, |ui| {
@@ -1464,17 +2274,30 @@ match c.create_session(None).await {
                                     has_session && !blocked,
                                     egui::TextEdit::multiline(&mut tab.input)
                                         .desired_width(available_width)
-                                        .desired_rows(3)
+                                        .desired_rows(3),
                                 );
-                                
+
                                 // Send on Cmd+Enter (macOS)
                                 let send_key = ui.input(|i| {
                                     i.modifiers.command && i.key_pressed(egui::Key::Enter)
                                 });
-                                
-                                let send_enabled = has_session && !blocked && !tab.input.trim().is_empty();
+
+                                let send_enabled = has_session
+                                    && !blocked
+                                    && !streaming
+                                    && !tab.input.trim().is_empty();
                                 if send_key && send_enabled {
-                                    if let (Some(client), Some(sid)) = (&self.client, &tab.session_id) {
+                                    if let (Some(client), Some(sid)) =
+                                        (&self.client, &tab.session_id)
+                                    {
+                                        tab.suppress_incoming = false;
+                                        tab.last_send_at = match SystemTime::now()
+                                            .duration_since(UNIX_EPOCH)
+                                        {
+                                            Ok(dur) => dur.as_millis() as i64,
+                                            Err(_) => 0,
+                                        };
+
                                         let text = tab.input.clone();
                                         let model = tab.selected_model.clone();
                                         tab.input.clear();
@@ -1487,14 +2310,53 @@ match c.create_session(None).await {
                                         }
                                     }
                                 }
+
+                                if streaming {
+                                    ui.add_enabled(false, egui::Button::new("Send"));
+                                }
                             });
-                        
-                        
-                        // Send button and hint
+
+                        // Send / Stop controls and hint
                         ui.vertical(|ui| {
-                            let send_enabled = has_session && !blocked && !tab.input.trim().is_empty();
-                            if ui.add_enabled(send_enabled, egui::Button::new("Send")).clicked() {
+                            if streaming {
+                                if ui
+                                    .add_enabled(has_session, egui::Button::new("Stop"))
+                                    .clicked()
+                                {
+                                    let sid_clone = tab.session_id.clone();
+
+                                    if let (Some(client), Some(sid)) = (&self.client, sid_clone) {
+                                        Self::cancel_active_response(tab);
+                                        let c = client.clone();
+                                        let sid_for_abort = sid.clone();
+                                        if let Some(rt) = &self.runtime {
+                                            rt.spawn(async move {
+                                                let _ = c.abort_session(&sid_for_abort).await;
+                                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                                                let _ = c.abort_session(&sid_for_abort).await;
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+
+                            let send_enabled = has_session
+                                && !blocked
+                                && !streaming
+                                && !tab.input.trim().is_empty();
+                            if ui
+                                .add_enabled(send_enabled, egui::Button::new("Send"))
+                                .clicked()
+                            {
                                 if let (Some(client), Some(sid)) = (&self.client, &tab.session_id) {
+                                    tab.suppress_incoming = false;
+                                    tab.last_send_at = match SystemTime::now()
+                                        .duration_since(UNIX_EPOCH)
+                                    {
+                                        Ok(dur) => dur.as_millis() as i64,
+                                        Err(_) => 0,
+                                    };
+
                                     let text = tab.input.clone();
                                     let model = tab.selected_model.clone();
                                     tab.input.clear();
@@ -1509,12 +2371,19 @@ match c.create_session(None).await {
                             }
                             if !has_session {
                                 ui.small("(Wait...)");
-                            } else if blocked {
+                            }
+                            if has_session && blocked {
                                 ui.small("Permission pending — respond in tool bubble");
-                            } else if self.audio_tx.is_some() {
-                                ui.small("⌘+Enter | AltRight: Record");
-                            } else {
-                                ui.small("⌘+Enter");
+                            }
+                            if has_session && streaming {
+                                ui.small("Stop to cancel response");
+                            }
+                            if has_session && !blocked && !streaming {
+                                if self.audio_tx.is_some() {
+                                    ui.small("⌘+Enter | AltRight: Record");
+                                } else {
+                                    ui.small("⌘+Enter");
+                                }
                             }
                         });
                     });
@@ -1532,7 +2401,9 @@ match c.create_session(None).await {
                         ui.label(format!("| {} (PID {})", info.base_url, info.pid));
                     }
                     // Show current directory context: override > active tab's session directory
-                    let current_dir: Option<&str> = if let Some(override_dir) = self.config.server.directory_override.as_deref() {
+                    let current_dir: Option<&str> = if let Some(override_dir) =
+                        self.config.server.directory_override.as_deref()
+                    {
                         Some(override_dir)
                     } else if let Some(tab) = self.tabs.get(self.active) {
                         tab.directory.as_deref()
@@ -1544,7 +2415,7 @@ match c.create_session(None).await {
                     }
                 });
                 ui.separator();
-                
+
                 // Messages area
                 egui::ScrollArea::vertical()
                     .stick_to_bottom(true)
@@ -1555,7 +2426,8 @@ match c.create_session(None).await {
                             });
                         } else if let Some(tab) = self.tabs.get(self.active) {
                             let spacing = self.config.ui.chat_density.message_spacing();
-                            let (session_id_opt, messages_copy) = (tab.session_id.clone(), tab.messages.clone());
+                            let (session_id_opt, messages_copy) =
+                                (tab.session_id.clone(), tab.messages.clone());
                             drop(tab);
                             for msg in &messages_copy {
                                 self.render_message(ui, msg, session_id_opt.as_deref());
@@ -1572,7 +2444,7 @@ match c.create_session(None).await {
         if let Some(tx) = &self.audio_tx {
             let _ = tx.send(AudioCmd::Shutdown);
         }
-        
+
         // Stop server if owned
         if let Some(s) = &self.server {
             if s.owned {
@@ -1589,36 +2461,37 @@ async fn run_audio_task(
     egui_ctx: egui::Context,
 ) {
     use crate::audio::AudioManager;
-    
+
     // Initialize AudioManager
     let mut audio_mgr = match AudioManager::new(&model_path) {
         Ok(mgr) => mgr,
         Err(e) => {
-            let _ = ui_tx.send(UiMsg::AudioError(format!("Failed to initialize audio: {}", e)));
+            let _ = ui_tx.send(UiMsg::AudioError(format!(
+                "Failed to initialize audio: {}",
+                e
+            )));
             egui_ctx.request_repaint();
             return;
         }
     };
-    
+
     // Listen for audio commands
     loop {
         match audio_rx.recv() {
-            Ok(AudioCmd::StartRecording) => {
-                match audio_mgr.start_recording() {
-                    Ok(_) => {
-                        let _ = ui_tx.send(UiMsg::RecordingStarted);
-                        egui_ctx.request_repaint();
-                    }
-                    Err(e) => {
-                        let _ = ui_tx.send(UiMsg::AudioError(e.to_string()));
-                        egui_ctx.request_repaint();
-                    }
+            Ok(AudioCmd::StartRecording) => match audio_mgr.start_recording() {
+                Ok(_) => {
+                    let _ = ui_tx.send(UiMsg::RecordingStarted);
+                    egui_ctx.request_repaint();
                 }
-            }
+                Err(e) => {
+                    let _ = ui_tx.send(UiMsg::AudioError(e.to_string()));
+                    egui_ctx.request_repaint();
+                }
+            },
             Ok(AudioCmd::StopRecording) => {
                 let _ = ui_tx.send(UiMsg::RecordingStopped);
                 egui_ctx.request_repaint();
-                
+
                 // Stop recording, resample, and transcribe
                 // This blocks but runs in dedicated audio task, not UI thread
                 match audio_mgr.stop_recording() {

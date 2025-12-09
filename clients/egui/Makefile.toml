@@ -1,38 +1,89 @@
-[tasks.setup-models]
-description = "Copy Whisper model to target directory (cross-platform)"
+[tasks._setup-models]
+description = "Copy Whisper model to ${TARGET_DIR}/models (cross-platform)"
 script_runner = "@duckscript"
 script = '''
-model_dir = set "target/debug/models"
-model_file = set "ggml-base.en.bin"
+# Resolve target directory from env or default to debug
+target_dir = get_env TARGET_DIR
+if is_empty ${target_dir}
+    target_dir = set "target/debug"
+end
+echo "TARGET_DIR=${target_dir}"
+model_dir = concat ${target_dir} "/models"
 
-# Get home directory (works on Windows, macOS, Linux)
-home = get_env HOME
-if is_empty ${home}
-    home = get_env USERPROFILE
+# Allow overrides
+model_file = get_env WHISPER_MODEL_FILE
+if is_empty ${model_file}
+    model_file = set "ggml-base.en.bin"
+end
+explicit_path = get_env WHISPER_MODEL_PATH
+
+# Determine source path with priority:
+# 1) WHISPER_MODEL_PATH (explicit full path)
+# 2) ~/Downloads/<file> or %USERPROFILE%/Downloads/<file> (authoritative)
+# 3) target/debug/models/<file> (fallback)
+source_path = set ""
+
+if not is_empty ${explicit_path}
+    exists = is_path_exists ${explicit_path}
+    if ${exists}
+        source_path = set ${explicit_path}
+    end
 end
 
-# Construct paths
-source_path = concat ${home} "/Downloads/" ${model_file}
-target_path = concat ${model_dir} "/" ${model_file}
+if is_empty ${source_path}
+    home = get_env HOME
+    if is_empty ${home}
+        home = get_env USERPROFILE
+    end
+    dl_src = concat ${home} "/Downloads/" ${model_file}
+    exists = is_path_exists ${dl_src}
+    if ${exists}
+        source_path = set ${dl_src}
+    end
+end
 
-# Create target directory
+if is_empty ${source_path}
+    debug_src = concat "target/debug/models/" ${model_file}
+    exists = is_path_exists ${debug_src}
+    if ${exists}
+        source_path = set ${debug_src}
+    end
+end
+
+# Ensure destination dir
 mkdir ${model_dir}
 
-# Check if source exists and copy
-exists = is_path_exists ${source_path}
-if ${exists}
-    echo "Copying Whisper model from ${source_path}..."
-    cp ${source_path} ${target_path}
-    echo "✓ Model ready at ${target_path}"
-else
-    echo "⚠️  Whisper model not found at ${source_path}"
+# Fail loudly if missing
+if is_empty ${source_path}
+    echo "❌ Whisper model not found. Looked for:"
+    echo "   1) WHISPER_MODEL_PATH"
+    echo "   2) target/debug/models/${model_file}"
+    echo "   3) ~/Downloads/${model_file}"
     echo ""
-    echo "Download it from:"
-    echo "  https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin"
-    echo ""
-    echo "Save to Downloads folder as ggml-base.en.bin"
+    echo "Fix one and rerun:"
+    echo "   - Set WHISPER_MODEL_PATH to the full file path"
+    echo "   - Place ${model_file} in target/debug/models or ~/Downloads"
+    echo "   - Or set audio.whisper_model_path in app config"
+    exit 1
 end
+
+# Copy
+target_path = concat ${model_dir} "/" ${model_file}
+echo "SOURCE_PATH=${source_path}"
+echo "Copying Whisper model from ${source_path}..."
+cp ${source_path} ${target_path}
+echo "✓ Model ready at ${target_path}"
 '''
+
+[tasks.setup-models]
+extend = "_setup-models"
+description = "Copy Whisper model (debug)"
+env = { TARGET_DIR = "target/debug" }
+
+[tasks.setup-models-release]
+extend = "_setup-models"
+description = "Copy Whisper model (release)"
+env = { TARGET_DIR = "target/release" }
 
 [tasks.setup-config-dev]
 description = "Copy .env (if exists) and config directory for development builds"
@@ -115,7 +166,7 @@ args = ["run"]
 
 [tasks.release]
 description = "Build production release with config"
-dependencies = ["build-release", "setup-config-release"]
+dependencies = ["build-release", "setup-models-release", "setup-config-release"]
 
 [tasks.default]
-alias = "dev"
+alias = "release"

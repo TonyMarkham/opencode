@@ -99,14 +99,18 @@ pub struct ModelSelection {
 }
 
 impl ModelSelection {
-    pub fn new(provider: impl Into<String>, model_id: impl Into<String>, name: impl Into<String>) -> Self {
+    pub fn new(
+        provider: impl Into<String>,
+        model_id: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Self {
         Self {
             provider: provider.into(),
             model_id: model_id.into(),
             name: name.into(),
         }
     }
-    
+
     /// Format as "provider/model_id" for display
     pub fn display_id(&self) -> String {
         format!("{}/{}", self.provider, self.model_id)
