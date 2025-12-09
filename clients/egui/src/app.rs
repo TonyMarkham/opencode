@@ -2457,7 +2457,7 @@ impl eframe::App for OpenCodeApp {
                     ui.horizontal(|ui| {
                         // Text input
                         let text_height = ui.text_style_height(&egui::TextStyle::Body) * 3.0;
-                        let available_width = ui.available_width() - 100.0; // Leave room for button
+                        let available_width = ui.available_width() - 200.0; // Leave room for button
 
                         egui::ScrollArea::vertical()
                             .max_height(text_height * 3.0)
@@ -2509,9 +2509,7 @@ impl eframe::App for OpenCodeApp {
                                     }
                                 }
 
-                                if streaming {
-                                    ui.add_enabled(false, egui::Button::new("Send"));
-                                }
+
                             });
 
                         // Send / Stop controls and hint
@@ -2585,7 +2583,7 @@ impl eframe::App for OpenCodeApp {
                             }
                             if has_session && !blocked && !streaming {
                                 if self.audio_tx.is_some() {
-                                    ui.small("⌘+Enter | AltRight: Record");
+                                    ui.small("⌘+Enter\nAltRight: Record");
                                 } else {
                                     ui.small("⌘+Enter");
                                 }
