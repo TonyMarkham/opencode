@@ -1111,33 +1111,41 @@ impl OpenCodeApp {
                     .inner_margin(12.0)
                     .show(ui, |ui| {
                         ui.set_max_width(bubble_max_width);
-                        if !full_text.is_empty() {
-                            // For system messages, use EmojiLabel to render colored emojis
-                            // For assistant messages, use CommonMarkViewer for markdown support
-                            if msg.role == "system" {
-                                egui_twemoji::EmojiLabel::new(&full_text).show(ui);
-                            } else {
-                                egui_commonmark::CommonMarkViewer::new().show(
-                                    ui,
-                                    &mut self.commonmark_cache,
-                                    &full_text,
-                                );
-                            }
-                        } else if msg.role == "assistant" && msg.tool_calls.is_empty() {
-                            // Show spinner only when no text AND no tools (truly waiting for response)
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label("Thinking...");
-                            });
-                        }
 
-                        // Tool calls (collapsible)
-                        if !msg.tool_calls.is_empty() {
-                            ui.add_space(8.0);
-                            for tool in &msg.tool_calls {
-                                self.render_warp_tool_block(ui, tool, session_id);
+                        // Use a single vertical column so text and
+                        // any tool calls share the same full-width layout.
+                        ui.vertical(|ui| {
+                            let column_width = ui.available_width();
+                            ui.set_width(column_width);
+
+                            if !full_text.is_empty() {
+                                // For system messages, use EmojiLabel to render colored emojis
+                                // For assistant messages, use CommonMarkViewer for markdown support
+                                if msg.role == "system" {
+                                    egui_twemoji::EmojiLabel::new(&full_text).show(ui);
+                                } else {
+                                    egui_commonmark::CommonMarkViewer::new().show(
+                                        ui,
+                                        &mut self.commonmark_cache,
+                                        &full_text,
+                                    );
+                                }
+                            } else if msg.role == "assistant" && msg.tool_calls.is_empty() {
+                                // Show spinner only when no text AND no tools (truly waiting for response)
+                                ui.horizontal(|ui| {
+                                    ui.spinner();
+                                    ui.label("Thinking...");
+                                });
                             }
-                        }
+
+                            // Tool calls (collapsible), stacked vertically under the text
+                            if !msg.tool_calls.is_empty() {
+                                ui.add_space(8.0);
+                                for tool in &msg.tool_calls {
+                                    self.render_warp_tool_block(ui, tool, session_id);
+                                }
+                            }
+                        });
                     });
 
                 ui.add_space(6.0);
