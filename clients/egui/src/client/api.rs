@@ -13,6 +13,8 @@ pub struct SessionInfo {
     pub title: String,
     pub directory: String,
     #[serde(default)]
+    pub version: Option<String>,
+    #[serde(default)]
     pub time: Option<SessionTime>,
 }
 

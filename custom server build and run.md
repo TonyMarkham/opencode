@@ -43,8 +43,10 @@ Navigate to the opencode package directory and run the build:
 
 ```bash
 cd packages/opencode
-bun run build
+OPENCODE_VERSION=1.0.134.pre-1 bun run ./script/build.ts
 ```
+
+You can omit `OPENCODE_VERSION=...` if you just want the default latest version.
 
 ### Build Options
 - **Full build** (default): Builds for all platforms (Linux, macOS, Windows)
@@ -56,6 +58,25 @@ bun run build
   ```bash
   bun run build --skip-install
   ```
+
+### Building with a specific version
+By default, the build script derives the version automatically. To force a specific or pre-release version, set `OPENCODE_VERSION` when building.
+
+The explicit form (what actually runs) is:
+
+```bash
+cd packages/opencode
+OPENCODE_VERSION=1.0.134.pre-1 bun run ./script/build.ts
+```
+
+You can also use the shorthand, which calls the same script via the `build` npm script:
+
+```bash
+cd packages/opencode
+OPENCODE_VERSION=1.0.134.pre-1 bun run build
+```
+
+Replace `1.0.134.pre-1` with your desired version string.
 
 ### Build Output
 After building, you'll find the compiled binaries in:
@@ -71,6 +92,21 @@ packages/opencode/dist/
 Each platform directory contains:
 - `bin/opencode` - The executable server binary
 - `package.json` - Package metadata
+
+### Step 4: Install or update your default `opencode` binary
+If you want your shell `opencode` command to use this custom build by default, copy the binary for your platform into your home `~/.opencode` directory. For example, on macOS Apple Silicon:
+
+```bash
+mkdir -p ~/.opencode/bin
+cp packages/opencode/dist/opencode-darwin-arm64/bin/opencode ~/.opencode/bin/opencode
+chmod +x ~/.opencode/bin/opencode
+```
+
+Then verify:
+
+```bash
+opencode --version
+```
 
 ## Running the Server Independently
 
@@ -108,19 +144,25 @@ The server supports various command-line options:
 ```
 
 ### Environment Variables
-You can configure the server using environment variables:
+You can configure the server using environment variables for provider API keys and various feature flags.
 
 ```bash
-# Set API keys
+# Set API keys (required for cloud models)
 export ANTHROPIC_API_KEY="your-anthropic-key"
 export OPENAI_API_KEY="your-openai-key"
 
-# Set server configuration
-export OPENCODE_PORT=3000
-export OPENCODE_HOST="0.0.0.0"
+# Example: optional feature/behavior flags
+export OPENCODE_CONFIG="/path/to/opencode.config.json"   # custom config file
+export OPENCODE_DISABLE_AUTOUPDATE=1                     # disable auto-updates
 
 # Run the server
 ./opencode
+```
+
+Port and host are normally set via CLI flags:
+
+```bash
+./opencode --port 3000 --host 0.0.0.0
 ```
 
 ### Running as a Background Service

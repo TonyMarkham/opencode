@@ -83,6 +83,7 @@ pub struct OpenCodeApp {
 pub(crate) struct Tab {
     title: String,
     session_id: Option<String>,
+    session_version: Option<String>,
     directory: Option<String>,
     messages: Vec<DisplayMessage>,
     active_assistant: Option<String>,
@@ -135,6 +136,7 @@ enum UiMsg {
         id: String,
         title: String,
         directory: String,
+        version: Option<String>,
     },
     GlobalEvent(serde_json::Value),
     #[allow(dead_code)]
@@ -383,10 +385,12 @@ impl OpenCodeApp {
                         id,
                         title,
                         directory,
+                        version,
                     } => {
                         if let Some(tab) = self.tabs.get_mut(tab_idx) {
                             tab.title = title;
                             tab.session_id = Some(id);
+                            tab.session_version = version;
                             tab.directory = Some(directory);
                         }
                     }
@@ -1651,6 +1655,7 @@ impl eframe::App for OpenCodeApp {
             self.tabs.push(Tab {
                 title: "(creating…)".to_string(),
                 session_id: None,
+                session_version: None,
                 directory: None,
                 messages: Vec::new(),
                 active_assistant: None,
@@ -1680,6 +1685,7 @@ impl eframe::App for OpenCodeApp {
                             id: info.id,
                             title: info.title,
                             directory: info.directory,
+                            version: info.version.clone(),
                         });
                     }
                     Err(e) => {
@@ -1804,6 +1810,7 @@ impl eframe::App for OpenCodeApp {
                     self.tabs.push(Tab {
                         title: "(creating…)".to_string(),
                         session_id: None,
+                        session_version: None,
                         directory: None,
                         messages: Vec::new(),
                         active_assistant: None,
@@ -1832,6 +1839,7 @@ impl eframe::App for OpenCodeApp {
                                         id: info.id,
                                         title: info.title,
                                         directory: info.directory,
+                                        version: info.version.clone(),
                                     });
                                 }
                                 Err(e) => {
@@ -2500,6 +2508,11 @@ impl eframe::App for OpenCodeApp {
                             |ui| {
                                 if ui.button("\u{2699} Settings").clicked() {
                                     self.show_settings = !self.show_settings;
+                                }
+
+                                if let Some(ver) = tab.session_version.as_ref() {
+                                    ui.small(format!("v{}", ver));
+                                    ui.separator();
                                 }
 
                                 if let Some(info) = &self.server {
