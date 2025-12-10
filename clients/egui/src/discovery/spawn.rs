@@ -1,4 +1,4 @@
-use std::{process::Stdio, time::Duration};
+use std::{io::ErrorKind, process::Stdio, time::Duration};
 
 use regex::Regex;
 use tokio::io::AsyncBufReadExt;
@@ -9,7 +9,7 @@ use crate::error::spawn::SpawnError;
 /// Spawn `opencode serve --port 0 --hostname 127.0.0.1` and parse the printed URL line.
 /// Then poll GET {base_url}/doc until success or timeout.
 pub async fn spawn_and_wait() -> Result<ServerInfo, SpawnError> {
-    let mut child = tokio::process::Command::new("opencode")
+    let cmd = tokio::process::Command::new("opencode")
         .arg("serve")
         .arg("--port")
         .arg("0")
@@ -17,8 +17,34 @@ pub async fn spawn_and_wait() -> Result<ServerInfo, SpawnError> {
         .arg("127.0.0.1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| SpawnError::Spawn(e.to_string()))?;
+        .spawn();
+
+    let mut child = match cmd {
+        Ok(child) => child,
+        Err(err) => {
+            if err.kind() != ErrorKind::NotFound {
+                return Err(SpawnError::Spawn(err.to_string()));
+            }
+
+            let exe = std::env::current_exe()
+                .map_err(|e| SpawnError::Spawn(e.to_string()))?;
+            let dir = exe
+                .parent()
+                .ok_or_else(|| SpawnError::Spawn("missing exe dir".to_string()))?;
+            let path = dir.join("opencode");
+
+            tokio::process::Command::new(path)
+                .arg("serve")
+                .arg("--port")
+                .arg("0")
+                .arg("--hostname")
+                .arg("127.0.0.1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| SpawnError::Spawn(e.to_string()))?
+        }
+    };
 
     let mut stdout = tokio::io::BufReader::new(child.stdout.take().expect("stdout")).lines();
 
