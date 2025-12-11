@@ -753,6 +753,32 @@ impl OpenCodeApp {
         Some(egui::Color32::from_rgb(r, g, b))
     }
 
+    fn normalize_code_fences(input: &str) -> String {
+        let mut out = String::with_capacity(input.len() + 8);
+        let mut start = 0;
+
+        while let Some(rel) = input[start..].find("```") {
+            let fence_start = start + rel;
+            let prev_is_newline = if fence_start == 0 {
+                true
+            } else {
+                input[..fence_start].chars().rev().next() == Some('\n')
+            };
+
+            out.push_str(&input[start..fence_start]);
+
+            if !prev_is_newline {
+                out.push('\n');
+            }
+
+            out.push_str("```");
+            start = fence_start + 3;
+        }
+
+        out.push_str(&input[start..]);
+        out
+    }
+
     fn handle_event(tab: &mut Tab, payload: &serde_json::Value, ctx: &egui::Context) {
         let event_type = payload.get("type").and_then(|v| v.as_str());
 
@@ -1152,7 +1178,12 @@ impl OpenCodeApp {
         ui.add_space(8.0);
 
         // Combine text parts into a single markdown string
-        let full_text = msg.text_parts.join("");
+        let raw_text = msg.text_parts.join("");
+        let full_text = if msg.role == "assistant" {
+            OpenCodeApp::normalize_code_fences(&raw_text)
+        } else {
+            raw_text
+        };
         let reasoning_text = msg.reasoning_parts.join("");
 
         ui.horizontal(|ui| {
