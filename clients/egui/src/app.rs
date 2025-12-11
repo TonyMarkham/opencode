@@ -1858,6 +1858,7 @@ impl eframe::App for OpenCodeApp {
         let mut reconnect_requested = false;
         let mut start_requested = false;
         let mut stop_requested = false;
+        let mut clear_other_sessions_requested = false;
 
         if self.show_settings {
             egui::Window::new("Settings")
@@ -1932,6 +1933,14 @@ impl eframe::App for OpenCodeApp {
                                     }
                                 }
                             });
+
+                            ui.add_space(8.0);
+
+                            if ui.button("Delete all other sessions").clicked() {
+                                clear_other_sessions_requested = true;
+                            }
+
+                            ui.small("Keeps only the current tab's session for this directory.");
 
                             ui.add_space(8.0);
 
@@ -2391,6 +2400,39 @@ impl eframe::App for OpenCodeApp {
                 if stop_pid(info.pid) {
                     self.server = None;
                     self.server_in_flight = false;
+                }
+            }
+        }
+        if clear_other_sessions_requested {
+            if let (Some(rt), Some(client)) = (&self.runtime, &self.client) {
+                if let Some(tab) = self.tabs.get(self.active) {
+                    if let Some(current_id) = &tab.session_id {
+                        let current_id = current_id.clone();
+                        let client = client.clone();
+                        let tx = self.ui_tx.clone();
+                        let egui_ctx = ctx.clone();
+
+                        rt.spawn(async move {
+                            let result = async {
+                                let sessions = client.list_sessions().await?;
+                                for session in sessions {
+                                    if session.id != current_id {
+                                        let _ = client.delete_session(&session.id).await;
+                                    }
+                                }
+                                Ok::<(), crate::error::api::ApiError>(())
+                            }
+                            .await;
+
+                            if let Err(e) = result {
+                                if let Some(tx) = tx {
+                                    let _ = tx.send(UiMsg::ServerError(e.to_string()));
+                                }
+                            }
+
+                            egui_ctx.request_repaint();
+                        });
+                    }
                 }
             }
         }
