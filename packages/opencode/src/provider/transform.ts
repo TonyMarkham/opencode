@@ -175,6 +175,11 @@ export namespace ProviderTransform {
     providerOptions?: Record<string, any>,
   ): Record<string, any> {
     const result: Record<string, any> = {}
+    const modelOptions = (model as any).options ?? {}
+
+    if (modelOptions.maxOutputTokens !== undefined) {
+      result["maxOutputTokens"] = modelOptions.maxOutputTokens
+    }
 
     // switch to providerID later, for now use this
     if (model.api.npm === "@openrouter/ai-sdk-provider") {
@@ -191,28 +196,48 @@ export namespace ProviderTransform {
       model.providerID === "google" ||
       (model.providerID.startsWith("opencode") && model.api.id.includes("gemini-3"))
     ) {
-      result["thinkingConfig"] = {
-        includeThoughts: true,
+      if (modelOptions.thinkingConfig) {
+        result["thinkingConfig"] = modelOptions.thinkingConfig
+      } else {
+        result["thinkingConfig"] = {
+          includeThoughts: true,
+        }
       }
     }
 
     if (model.api.id.includes("gpt-5") && !model.api.id.includes("gpt-5-chat")) {
       if (model.providerID.includes("codex")) {
-        result["store"] = false
+        result["store"] = modelOptions.store === undefined ? false : modelOptions.store
       }
 
       if (!model.api.id.includes("codex") && !model.api.id.includes("gpt-5-pro")) {
-        result["reasoningEffort"] = "medium"
+        if (modelOptions.reasoningEffort) {
+          result["reasoningEffort"] = modelOptions.reasoningEffort
+        } else {
+          result["reasoningEffort"] = "medium"
+        }
       }
 
       if (model.api.id.endsWith("gpt-5.1") && model.providerID !== "azure") {
-        result["textVerbosity"] = "low"
+        if (modelOptions.textVerbosity) {
+          result["textVerbosity"] = modelOptions.textVerbosity
+        } else {
+          result["textVerbosity"] = "low"
+        }
       }
 
       if (model.providerID.startsWith("opencode")) {
         result["promptCacheKey"] = sessionID
-        result["include"] = ["reasoning.encrypted_content"]
-        result["reasoningSummary"] = "auto"
+        if (modelOptions.include) {
+          result["include"] = modelOptions.include
+        } else {
+          result["include"] = ["reasoning.encrypted_content"]
+        }
+        if (modelOptions.reasoningSummary) {
+          result["reasoningSummary"] = modelOptions.reasoningSummary
+        } else {
+          result["reasoningSummary"] = "auto"
+        }
       }
     }
     return result
@@ -220,15 +245,25 @@ export namespace ProviderTransform {
 
   export function smallOptions(model: Provider.Model) {
     const options: Record<string, any> = {}
+    const modelOptions = (model as any).options ?? {}
 
-    if (model.providerID === "openai" || model.api.id.includes("gpt-5")) {
+    if (modelOptions.maxOutputTokens !== undefined) {
+      options["maxOutputTokens"] = modelOptions.maxOutputTokens
+    }
+
+    if (modelOptions.reasoningEffort) {
+      options["reasoningEffort"] = modelOptions.reasoningEffort
+    } else if (model.providerID === "openai" || model.api.id.includes("gpt-5")) {
       if (model.api.id.includes("5.1")) {
         options["reasoningEffort"] = "low"
       } else {
         options["reasoningEffort"] = "minimal"
       }
     }
-    if (model.providerID === "google") {
+
+    if (modelOptions.thinkingConfig) {
+      options["thinkingConfig"] = modelOptions.thinkingConfig
+    } else if (model.providerID === "google") {
       options["thinkingConfig"] = {
         thinkingBudget: 0,
       }
@@ -279,6 +314,11 @@ export namespace ProviderTransform {
   ): number {
     const modelCap = modelLimit || globalLimit
     const standardLimit = Math.min(modelCap, globalLimit)
+
+    const configured = options?.["maxOutputTokens"]
+    if (typeof configured === "number" && configured > 0) {
+      return Math.min(configured, standardLimit)
+    }
 
     if (npm === "@ai-sdk/anthropic") {
       const thinking = options?.["thinking"]

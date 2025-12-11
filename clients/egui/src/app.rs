@@ -109,6 +109,10 @@ struct DisplayMessage {
     message_id: String,
     role: String,
     text_parts: Vec<String>,
+    reasoning_parts: Vec<String>,
+    tokens_input: Option<u64>,
+    tokens_output: Option<u64>,
+    tokens_reasoning: Option<u64>,
     tool_calls: Vec<ToolCall>,
 }
 
@@ -533,13 +537,14 @@ impl OpenCodeApp {
                             });
 
                         if let Some(sid) = sid_opt {
-                            if let Some(tab) = self
-                                .tabs
-                                .iter_mut()
-                                .find(|t| t.session_id.as_deref() == Some(&sid))
-                            {
-                                Self::handle_event(tab, &payload);
-                            }
+                             if let Some(tab) = self
+                                 .tabs
+                                 .iter_mut()
+                                 .find(|t| t.session_id.as_deref() == Some(&sid))
+                             {
+                                 Self::handle_event(tab, &payload, ctx);
+                             }
+
                         }
                     }
                     UiMsg::RecordingStarted => {
@@ -555,6 +560,10 @@ impl OpenCodeApp {
                                 ),
                                 role: "system".to_string(),
                                 text_parts: vec!["🎙 Recording...".to_string()],
+                                reasoning_parts: Vec::new(),
+                                tokens_input: None,
+                                tokens_output: None,
+                                tokens_reasoning: None,
                                 tool_calls: Vec::new(),
                             });
                         }
@@ -571,6 +580,10 @@ impl OpenCodeApp {
                                 ),
                                 role: "system".to_string(),
                                 text_parts: vec!["Processing audio...".to_string()],
+                                reasoning_parts: Vec::new(),
+                                tokens_input: None,
+                                tokens_output: None,
+                                tokens_reasoning: None,
                                 tool_calls: Vec::new(),
                             });
                         }
@@ -592,6 +605,10 @@ impl OpenCodeApp {
                                 ),
                                 role: "system".to_string(),
                                 text_parts: vec!["✅ Transcription complete".to_string()],
+                                reasoning_parts: Vec::new(),
+                                tokens_input: None,
+                                tokens_output: None,
+                                tokens_reasoning: None,
                                 tool_calls: Vec::new(),
                             });
                         }
@@ -638,6 +655,10 @@ impl OpenCodeApp {
                                 message_id: msg_id,
                                 role: "system".to_string(),
                                 text_parts: vec![format!("⚠ Agents: {err}")],
+                                reasoning_parts: Vec::new(),
+                                tokens_input: None,
+                                tokens_output: None,
+                                tokens_reasoning: None,
                                 tool_calls: Vec::new(),
                             });
                         }
@@ -661,6 +682,10 @@ impl OpenCodeApp {
                                 ),
                                 role: "system".to_string(),
                                 text_parts: vec![format!("⚠ Audio: {}", err)],
+                                reasoning_parts: Vec::new(),
+                                tokens_input: None,
+                                tokens_output: None,
+                                tokens_reasoning: None,
                                 tool_calls: Vec::new(),
                             });
                         }
@@ -728,7 +753,7 @@ impl OpenCodeApp {
         Some(egui::Color32::from_rgb(r, g, b))
     }
 
-    fn handle_event(tab: &mut Tab, payload: &serde_json::Value) {
+    fn handle_event(tab: &mut Tab, payload: &serde_json::Value, ctx: &egui::Context) {
         let event_type = payload.get("type").and_then(|v| v.as_str());
 
         match event_type {
@@ -776,28 +801,65 @@ impl OpenCodeApp {
                         }
 
                         if role == "assistant" {
-                            if finish.is_some() {
-                                tab.active_assistant = None;
-                            } else {
-                                tab.active_assistant = Some(message_id.clone());
-                            }
-                        }
-                        if role == "user" {
-                            tab.suppress_incoming = false;
-                        }
+                             if finish.is_some() {
+                                 tab.active_assistant = None;
 
-                        if !tab.messages.iter().any(|m| m.message_id == message_id) {
-                            dbg_log(&format!(
-                                "message.updated accept: msg={} role={} created={} finish={:?}",
-                                message_id, role, created, finish
-                            ));
-                            tab.messages.push(DisplayMessage {
-                                message_id: message_id.clone(),
-                                role: role.clone(),
-                                text_parts: Vec::new(),
-                                tool_calls: Vec::new(),
-                            });
-                        }
+                                 // Collapse reasoning panel when assistant finishes
+                                 let id: egui::Id = format!("reasoning-{}", message_id).into();
+                                 let mut state =
+                                     egui::collapsing_header::CollapsingState::load_with_default_open(
+                                         ctx,
+                                         id,
+                                         false,
+                                     );
+                                 state.set_open(false);
+                                 state.store(ctx);
+                             } else {
+                                 tab.active_assistant = Some(message_id.clone());
+                             }
+                         }
+                         if role == "user" {
+                             tab.suppress_incoming = false;
+                         }
+ 
+                         let mut tokens_input = None;
+                         let mut tokens_output = None;
+                         let mut tokens_reasoning = None;
+                         if role == "assistant" {
+                             if let Some(tokens) = info.get("tokens") {
+                                 tokens_input = tokens.get("input").and_then(|v| v.as_u64());
+                                 tokens_output = tokens.get("output").and_then(|v| v.as_u64());
+                                 tokens_reasoning = tokens.get("reasoning").and_then(|v| v.as_u64());
+                             }
+                         }
+ 
+                         if let Some(existing) = tab
+                             .messages
+                             .iter_mut()
+                             .find(|m| m.message_id == message_id)
+                         {
+                             if role == "assistant" {
+                                 existing.tokens_input = tokens_input;
+                                 existing.tokens_output = tokens_output;
+                                 existing.tokens_reasoning = tokens_reasoning;
+                             }
+                         } else {
+                             dbg_log(&format!(
+                                 "message.updated accept: msg={} role={} created={} finish={:?}",
+                                 message_id, role, created, finish
+                             ));
+                             tab.messages.push(DisplayMessage {
+                                 message_id: message_id.clone(),
+                                 role: role.clone(),
+                                 text_parts: Vec::new(),
+                                 reasoning_parts: Vec::new(),
+                                 tokens_input,
+                                 tokens_output,
+                                 tokens_reasoning,
+                                 tool_calls: Vec::new(),
+                             });
+                         }
+
 
                     }
                 }
@@ -874,16 +936,26 @@ impl OpenCodeApp {
                         }
 
                         if part_type == Some("text") {
+ 
+                             let text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                             if let Some(mid) = message_id {
+                                 if let Some(msg) = tab.messages.iter_mut().find(|m| m.message_id == mid)
+                                 {
+                                     msg.text_parts.clear();
+                                     msg.text_parts.push(text.to_string());
+                                 }
+                             }
+                         } else if part_type == Some("reasoning") {
+                             let text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                             if let Some(mid) = message_id {
+                                 if let Some(msg) = tab.messages.iter_mut().find(|m| m.message_id == mid) {
+                                     msg.reasoning_parts.clear();
+                                     msg.reasoning_parts.push(text.to_string());
+                                 }
+                             }
+                         } else if part_type == Some("tool") {
 
-                            let text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                            if let Some(mid) = message_id {
-                                if let Some(msg) = tab.messages.iter_mut().find(|m| m.message_id == mid)
-                                {
-                                    msg.text_parts.clear();
-                                    msg.text_parts.push(text.to_string());
-                                }
-                            }
-                        } else if part_type == Some("tool") {
+
                             let tool_id =
                                 part.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
                             let tool_name = part
@@ -1081,6 +1153,7 @@ impl OpenCodeApp {
 
         // Combine text parts into a single markdown string
         let full_text = msg.text_parts.join("");
+        let reasoning_text = msg.reasoning_parts.join("");
 
         ui.horizontal(|ui| {
             if align_right {
@@ -1122,28 +1195,87 @@ impl OpenCodeApp {
                             let column_width = ui.available_width();
                             ui.set_width(column_width);
 
-                            if !full_text.is_empty() {
-                                // For system messages, use EmojiLabel to render colored emojis
-                                // For assistant messages, use CommonMarkViewer for markdown support
-                                if msg.role == "system" {
-                                    egui_twemoji::EmojiLabel::new(&full_text).show(ui);
-                                } else {
-                                    egui_commonmark::CommonMarkViewer::new().show(
-                                        ui,
-                                        &mut self.commonmark_cache,
-                                        &full_text,
-                                    );
-                                }
-                            } else if msg.role == "assistant" && msg.tool_calls.is_empty() {
-                                // Show spinner only when no text AND no tools (truly waiting for response)
-                                ui.horizontal(|ui| {
-                                    ui.spinner();
-                                    ui.label("Thinking...");
-                                });
+                            if msg.role == "assistant" && !reasoning_text.trim().is_empty() {
+                                egui::Frame::new()
+                                    .fill(egui::Color32::from_rgb(45, 45, 45))
+                                    .corner_radius(6)
+                                    .inner_margin(6.0)
+                                    .show(ui, |ui| {
+                                        egui::collapsing_header::CollapsingState::load_with_default_open(
+                                            ui.ctx(),
+                                            format!("reasoning-{}", msg.message_id).into(),
+                                            full_text.is_empty(),
+                                        )
+                                        .show_header(ui, |ui| {
+                                            ui.label("Reasoning");
+                                        })
+                                        .body(|ui| {
+                                            egui::Frame::new()
+                                                .fill(egui::Color32::from_rgb(40, 40, 40))
+                                                .corner_radius(4)
+                                                .inner_margin(8.0)
+                                                .show(ui, |ui| {
+                                                    ui.label(reasoning_text.clone());
+                                                });
+                                        });
+                                    });
+
+                                ui.add_space(8.0);
                             }
 
-                            // Tool calls (collapsible), stacked vertically under the text
-                            if !msg.tool_calls.is_empty() {
+ 
+                            if !full_text.is_empty() {
+                                 // For system messages, use EmojiLabel to render colored emojis
+                                 // For assistant messages, use CommonMarkViewer for markdown support
+                                 if msg.role == "system" {
+                                     egui_twemoji::EmojiLabel::new(&full_text).show(ui);
+                                 } else {
+                                     egui_commonmark::CommonMarkViewer::new().show(
+                                         ui,
+                                         &mut self.commonmark_cache,
+                                         &full_text,
+                                     );
+                                 }
+                             } else if msg.role == "assistant" && msg.tool_calls.is_empty() {
+                                 // Show spinner only when no text AND no tools (truly waiting for response)
+                                 ui.horizontal(|ui| {
+                                     ui.spinner();
+                                     ui.label("Thinking...");
+                                 });
+                             }
+
+                            if msg.role == "assistant" {
+                                if msg.tokens_input.is_some()
+                                    || msg.tokens_output.is_some()
+                                    || msg.tokens_reasoning.is_some()
+                                {
+                                    ui.add_space(4.0);
+                                    let mut parts = Vec::new();
+                                    if let Some(input) = msg.tokens_input {
+                                        parts.push(format!("in {input}"));
+                                    }
+                                    if let Some(output) = msg.tokens_output {
+                                        parts.push(format!("out {output}"));
+                                    }
+                                    if let Some(reasoning) = msg.tokens_reasoning {
+                                        parts.push(format!("reason {reasoning}"));
+                                    }
+                                    if !parts.is_empty() {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "tokens: {}",
+                                                parts.join(", "),
+                                            ))
+                                            .small()
+                                            .weak(),
+                                        );
+                                    }
+                                }
+                            }
+ 
+                             // Tool calls (collapsible), stacked vertically under the text
+                             if !msg.tool_calls.is_empty() {
+
                                 ui.add_space(8.0);
                                 for tool in &msg.tool_calls {
                                     self.render_warp_tool_block(ui, tool, session_id);
