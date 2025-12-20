@@ -153,13 +153,11 @@ impl OpencodeClient {
 
         let body = MessageRequest {
             parts,
-            model: model
-                .map(|(provider_id, model_id)| ModelIdentifier::new(provider_id, model_id)),
+            model: model.map(|(provider_id, model_id)| ModelIdentifier::new(provider_id, model_id)),
             agent: agent.clone(),
         };
 
         let resp = self
-
             .with_dir(self.http.post(url).json(&body))
             .send()
             .await

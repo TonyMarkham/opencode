@@ -1,14 +1,14 @@
+use arboard;
+use base64;
+use base64::Engine;
 use eframe::egui;
+use image::ExtendedColorType;
+use image::ImageEncoder;
+use image::codecs::png::PngEncoder;
 use serde::Deserialize;
 use std::sync::{Arc, mpsc};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::runtime::Runtime;
-use arboard;
-use image::codecs::png::PngEncoder;
-use image::ExtendedColorType;
-use base64;
-use base64::Engine;
-use image::ImageEncoder;
 
 use crate::discovery::process::{ServerInfo, check_health, discover, stop_pid};
 use crate::discovery::spawn::spawn_and_wait;
@@ -319,6 +319,11 @@ impl OpenCodeApp {
                             Ok(mut c) => {
                                 if let Some(dir) = &self.config.server.directory_override {
                                     c.directory = Some(std::path::PathBuf::from(dir));
+                                } else {
+                                    // Auto-detect current working directory if no override configured
+                                    if let Ok(cwd) = std::env::current_dir() {
+                                        c.directory = Some(cwd);
+                                    }
                                 }
                                 self.client = Some(c)
                             }
@@ -407,15 +412,13 @@ impl OpenCodeApp {
                                         serde_json::from_value::<PermissionInfo>(props.clone())
                                     {
                                         let mut is_cancelled = false;
-                                        if let Some(tab) = self
-                                            .tabs
-                                            .iter()
-                                            .find(|t| {
-                                                t.session_id.as_deref() == Some(info.session_id.as_str())
-                                            })
-                                        {
+                                        if let Some(tab) = self.tabs.iter().find(|t| {
+                                            t.session_id.as_deref()
+                                                == Some(info.session_id.as_str())
+                                        }) {
                                             if let Some(call_id) = info.call_id.as_deref() {
-                                                if tab.cancelled_calls.iter().any(|c| c == call_id) {
+                                                if tab.cancelled_calls.iter().any(|c| c == call_id)
+                                                {
                                                     is_cancelled = true;
                                                 }
                                             }
@@ -451,13 +454,21 @@ impl OpenCodeApp {
                                             }
 
                                             if !is_cancelled {
-                                                if tab.cancelled_messages.iter().any(|m| m == &info.message_id) {
+                                                if tab
+                                                    .cancelled_messages
+                                                    .iter()
+                                                    .any(|m| m == &info.message_id)
+                                                {
                                                     is_cancelled = true;
                                                 }
                                             }
                                             if !is_cancelled {
                                                 if let Some(call_id) = info.call_id.as_deref() {
-                                                    if tab.cancelled_calls.iter().any(|c| c == call_id) {
+                                                    if tab
+                                                        .cancelled_calls
+                                                        .iter()
+                                                        .any(|c| c == call_id)
+                                                    {
                                                         is_cancelled = true;
                                                     }
                                                 }
@@ -480,10 +491,8 @@ impl OpenCodeApp {
                                                 info.call_id,
                                                 info.time.created
                                             ));
-                                            auto_rejects.push((
-                                                info.session_id.clone(),
-                                                info.id.clone(),
-                                            ));
+                                            auto_rejects
+                                                .push((info.session_id.clone(), info.id.clone()));
                                         } else {
                                             dbg_log(&format!(
                                                 "perm queued: sid={} mid={} call={:?} created={}",
@@ -537,14 +546,13 @@ impl OpenCodeApp {
                             });
 
                         if let Some(sid) = sid_opt {
-                             if let Some(tab) = self
-                                 .tabs
-                                 .iter_mut()
-                                 .find(|t| t.session_id.as_deref() == Some(&sid))
-                             {
-                                 Self::handle_event(tab, &payload, ctx);
-                             }
-
+                            if let Some(tab) = self
+                                .tabs
+                                .iter_mut()
+                                .find(|t| t.session_id.as_deref() == Some(&sid))
+                            {
+                                Self::handle_event(tab, &payload, ctx);
+                            }
                         }
                     }
                     UiMsg::RecordingStarted => {
@@ -665,7 +673,8 @@ impl OpenCodeApp {
                     }
                     UiMsg::AttachmentAdded(data, mime) => {
                         if let Some(tab) = self.tabs.get_mut(self.active) {
-                            tab.pending_attachments.push(PendingAttachment { data, mime });
+                            tab.pending_attachments
+                                .push(PendingAttachment { data, mime });
                         }
                     }
                     UiMsg::AudioError(err) => {
@@ -805,7 +814,10 @@ impl OpenCodeApp {
                             .unwrap_or(i64::MAX);
 
                         if tab.cancelled_messages.iter().any(|m| m == &message_id) {
-                            dbg_log(&format!("message.updated drop: msg={} cancelled", message_id));
+                            dbg_log(&format!(
+                                "message.updated drop: msg={} cancelled",
+                                message_id
+                            ));
                             return;
                         }
 
@@ -827,66 +839,62 @@ impl OpenCodeApp {
                         }
 
                         if role == "assistant" {
-                             if finish.is_some() {
-                                 tab.active_assistant = None;
+                            if finish.is_some() {
+                                tab.active_assistant = None;
 
-                                 // Collapse reasoning panel when assistant finishes
-                                 let id: egui::Id = format!("reasoning-{}", message_id).into();
-                                 let mut state =
+                                // Collapse reasoning panel when assistant finishes
+                                let id: egui::Id = format!("reasoning-{}", message_id).into();
+                                let mut state =
                                      egui::collapsing_header::CollapsingState::load_with_default_open(
                                          ctx,
                                          id,
                                          false,
                                      );
-                                 state.set_open(false);
-                                 state.store(ctx);
-                             } else {
-                                 tab.active_assistant = Some(message_id.clone());
-                             }
-                         }
-                         if role == "user" {
-                             tab.suppress_incoming = false;
-                         }
- 
-                         let mut tokens_input = None;
-                         let mut tokens_output = None;
-                         let mut tokens_reasoning = None;
-                         if role == "assistant" {
-                             if let Some(tokens) = info.get("tokens") {
-                                 tokens_input = tokens.get("input").and_then(|v| v.as_u64());
-                                 tokens_output = tokens.get("output").and_then(|v| v.as_u64());
-                                 tokens_reasoning = tokens.get("reasoning").and_then(|v| v.as_u64());
-                             }
-                         }
- 
-                         if let Some(existing) = tab
-                             .messages
-                             .iter_mut()
-                             .find(|m| m.message_id == message_id)
-                         {
-                             if role == "assistant" {
-                                 existing.tokens_input = tokens_input;
-                                 existing.tokens_output = tokens_output;
-                                 existing.tokens_reasoning = tokens_reasoning;
-                             }
-                         } else {
-                             dbg_log(&format!(
-                                 "message.updated accept: msg={} role={} created={} finish={:?}",
-                                 message_id, role, created, finish
-                             ));
-                             tab.messages.push(DisplayMessage {
-                                 message_id: message_id.clone(),
-                                 role: role.clone(),
-                                 text_parts: Vec::new(),
-                                 reasoning_parts: Vec::new(),
-                                 tokens_input,
-                                 tokens_output,
-                                 tokens_reasoning,
-                                 tool_calls: Vec::new(),
-                             });
-                         }
+                                state.set_open(false);
+                                state.store(ctx);
+                            } else {
+                                tab.active_assistant = Some(message_id.clone());
+                            }
+                        }
+                        if role == "user" {
+                            tab.suppress_incoming = false;
+                        }
 
+                        let mut tokens_input = None;
+                        let mut tokens_output = None;
+                        let mut tokens_reasoning = None;
+                        if role == "assistant" {
+                            if let Some(tokens) = info.get("tokens") {
+                                tokens_input = tokens.get("input").and_then(|v| v.as_u64());
+                                tokens_output = tokens.get("output").and_then(|v| v.as_u64());
+                                tokens_reasoning = tokens.get("reasoning").and_then(|v| v.as_u64());
+                            }
+                        }
 
+                        if let Some(existing) =
+                            tab.messages.iter_mut().find(|m| m.message_id == message_id)
+                        {
+                            if role == "assistant" {
+                                existing.tokens_input = tokens_input;
+                                existing.tokens_output = tokens_output;
+                                existing.tokens_reasoning = tokens_reasoning;
+                            }
+                        } else {
+                            dbg_log(&format!(
+                                "message.updated accept: msg={} role={} created={} finish={:?}",
+                                message_id, role, created, finish
+                            ));
+                            tab.messages.push(DisplayMessage {
+                                message_id: message_id.clone(),
+                                role: role.clone(),
+                                text_parts: Vec::new(),
+                                reasoning_parts: Vec::new(),
+                                tokens_input,
+                                tokens_output,
+                                tokens_reasoning,
+                                tool_calls: Vec::new(),
+                            });
+                        }
                     }
                 }
             }
@@ -897,9 +905,7 @@ impl OpenCodeApp {
                         let message_id = part.get("messageID").and_then(|v| v.as_str());
                         if let Some(mid) = message_id {
                             if tab.cancelled_messages.iter().any(|m| m == mid) {
-                                dbg_log(&format!(
-                                    "part drop: msg={} because cancelled", mid
-                                ));
+                                dbg_log(&format!("part drop: msg={} because cancelled", mid));
                                 return;
                             }
                         } else {
@@ -927,7 +933,8 @@ impl OpenCodeApp {
                                 if part_type == Some("text") {
                                     if let Some(mid) = message_id {
                                         dbg_log(&format!(
-                                            "part clearing suppress on assistant text msg={}", mid
+                                            "part clearing suppress on assistant text msg={}",
+                                            mid
                                         ));
                                     }
                                     tab.suppress_incoming = false;
@@ -951,10 +958,7 @@ impl OpenCodeApp {
                             }
                         }
 
-                        if let Some(call) = part
-                            .get("callID")
-                            .and_then(|v| v.as_str())
-                        {
+                        if let Some(call) = part.get("callID").and_then(|v| v.as_str()) {
                             if tab.cancelled_calls.iter().any(|c| c == call) {
                                 dbg_log(&format!("part drop: call={} cancelled", call));
                                 return;
@@ -962,26 +966,26 @@ impl OpenCodeApp {
                         }
 
                         if part_type == Some("text") {
- 
-                             let text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                             if let Some(mid) = message_id {
-                                 if let Some(msg) = tab.messages.iter_mut().find(|m| m.message_id == mid)
-                                 {
-                                     msg.text_parts.clear();
-                                     msg.text_parts.push(text.to_string());
-                                 }
-                             }
-                         } else if part_type == Some("reasoning") {
-                             let text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                             if let Some(mid) = message_id {
-                                 if let Some(msg) = tab.messages.iter_mut().find(|m| m.message_id == mid) {
-                                     msg.reasoning_parts.clear();
-                                     msg.reasoning_parts.push(text.to_string());
-                                 }
-                             }
-                         } else if part_type == Some("tool") {
-
-
+                            let text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                            if let Some(mid) = message_id {
+                                if let Some(msg) =
+                                    tab.messages.iter_mut().find(|m| m.message_id == mid)
+                                {
+                                    msg.text_parts.clear();
+                                    msg.text_parts.push(text.to_string());
+                                }
+                            }
+                        } else if part_type == Some("reasoning") {
+                            let text = part.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                            if let Some(mid) = message_id {
+                                if let Some(msg) =
+                                    tab.messages.iter_mut().find(|m| m.message_id == mid)
+                                {
+                                    msg.reasoning_parts.clear();
+                                    msg.reasoning_parts.push(text.to_string());
+                                }
+                            }
+                        } else if part_type == Some("tool") {
                             let tool_id =
                                 part.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
                             let tool_name = part
@@ -1032,7 +1036,8 @@ impl OpenCodeApp {
                                 .unwrap_or(serde_json::Value::Null);
 
                             if let Some(mid) = message_id {
-                                if let Some(msg) = tab.messages.iter_mut().find(|m| m.message_id == mid)
+                                if let Some(msg) =
+                                    tab.messages.iter_mut().find(|m| m.message_id == mid)
                                 {
                                     if let Some(call) = call_id.as_deref() {
                                         if tab.cancelled_calls.iter().any(|c| c == call) {
@@ -1112,7 +1117,8 @@ impl OpenCodeApp {
             };
 
             dbg_log(&format!(
-                "stop: active_id={} cancelled_after={}", active_id, now_ms
+                "stop: active_id={} cancelled_after={}",
+                active_id, now_ms
             ));
 
             if let Some(msg) = tab.messages.iter_mut().find(|m| m.message_id == active_id) {
@@ -1144,11 +1150,7 @@ impl OpenCodeApp {
                 }
             }
 
-            if !tab
-                .cancelled_messages
-                .iter()
-                .any(|m| m == &active_id)
-            {
+            if !tab.cancelled_messages.iter().any(|m| m == &active_id) {
                 tab.cancelled_messages.push(active_id.clone());
             }
 
@@ -1254,7 +1256,6 @@ impl OpenCodeApp {
                                 ui.add_space(8.0);
                             }
 
- 
                             if !full_text.is_empty() {
                                  // For system messages, use EmojiLabel to render colored emojis
                                  // For assistant messages, use CommonMarkViewer for markdown support
@@ -1303,7 +1304,6 @@ impl OpenCodeApp {
                                     }
                                 }
                             }
- 
                              // Tool calls (collapsible), stacked vertically under the text
                              if !msg.tool_calls.is_empty() {
 
@@ -1343,9 +1343,7 @@ impl OpenCodeApp {
         let perm_opt = if let (Some(sid), Some(call_id)) = (session_id, &tool.call_id) {
             self.pending_permissions
                 .iter()
-                .find(|p| {
-                    p.session_id == sid && p.call_id.as_deref() == Some(call_id.as_str())
-                })
+                .find(|p| p.session_id == sid && p.call_id.as_deref() == Some(call_id.as_str()))
                 .cloned()
         } else {
             None
@@ -1356,310 +1354,376 @@ impl OpenCodeApp {
         let default_open = is_running || has_permission || has_error;
         let mut is_expanded = ui.data(|d| d.get_temp::<bool>(id).unwrap_or(default_open));
 
-        ui.push_id(id, |ui| { ui.vertical(|ui| {
-            // -- Header --
-            let header_rounding = if is_expanded {
-                egui::CornerRadius {
-                    nw: 6,
-                    ne: 6,
-                    sw: 0,
-                    se: 0,
-                }
-            } else {
-                egui::CornerRadius::same(6)
-            };
+        ui.push_id(id, |ui| {
+            ui.vertical(|ui| {
+                // -- Header --
+                let header_rounding = if is_expanded {
+                    egui::CornerRadius {
+                        nw: 6,
+                        ne: 6,
+                        sw: 0,
+                        se: 0,
+                    }
+                } else {
+                    egui::CornerRadius::same(6)
+                };
 
-            egui::Frame::new()
-                .fill(egui::Color32::from_gray(45))
-                .corner_radius(header_rounding)
-                .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
-                .inner_margin(8.0)
-                .show(ui, |ui| {
-                    ui.vertical(|ui| {
-                        // Header Row (Clickable)
-                        let mut toggle_requested = false;
+                egui::Frame::new()
+                    .fill(egui::Color32::from_gray(45))
+                    .corner_radius(header_rounding)
+                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
+                    .inner_margin(8.0)
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            // Header Row (Clickable)
+                            let mut toggle_requested = false;
 
-                        ui.horizontal(|ui| {
-                            ui.style_mut().spacing.item_spacing.x = 8.0;
+                            ui.horizontal(|ui| {
+                                ui.style_mut().spacing.item_spacing.x = 8.0;
 
-                            // Right Side (Duration) - Render first to stick to right
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if let (Some(start), Some(end)) = (tool.started_at, tool.finished_at) {
-                                    let duration_ms = end - start;
-                                    let text = format!("{:.1}s", duration_ms as f64 / 1000.0);
-                                    if ui.add(egui::Label::new(
-                                        egui::RichText::new(text).weak()
-                                    ).sense(egui::Sense::click())).clicked() {
-                                        toggle_requested = true;
-                                    }
-                                } else if tool.started_at.is_some() {
-                                    if ui.add(egui::Label::new(
-                                        egui::RichText::new("...").weak()
-                                    ).sense(egui::Sense::click())).clicked() {
-                                        toggle_requested = true;
-                                    }
-                                }
-
-                                // Left Side + Middle (Path) - Fills remaining space
-                                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                    // Status Icon
-                                    let status_icon = match tool.status.as_str() {
-                                        "success" | "completed" => "✅",
-                                        "error" => "❌",
-                                        "cancelled" => "🚫",
-                                        _ => "⏳",
-                                    };
-                                    if ui.add(egui::Label::new(status_icon).sense(egui::Sense::click())).clicked() {
-                                        toggle_requested = true;
-                                    }
-
-                                    // Name
-                                    let name_text = egui::RichText::new(format!("({})", tool.name))
-                                        .strong()
-                                        .color(egui::Color32::WHITE);
-                                    if ui.add(egui::Label::new(name_text).sense(egui::Sense::click())).clicked() {
-                                        toggle_requested = true;
-                                    }
-
-                                    // Separator
-                                    let sep_text = egui::RichText::new("  -  ").color(egui::Color32::from_gray(100));
-                                    if ui.add(egui::Label::new(sep_text).sense(egui::Sense::click())).clicked() {
-                                        toggle_requested = true;
-                                    }
-
-                                    // Command Summary
-                                    let parsed_input_store;
-                                    let effective_input = if let Some(s) = tool.input.as_str() {
-                                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(s) {
-                                            parsed_input_store = val;
-                                            &parsed_input_store
-                                        } else {
-                                            &tool.input
+                                // Right Side (Duration) - Render first to stick to right
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if let (Some(start), Some(end)) =
+                                            (tool.started_at, tool.finished_at)
+                                        {
+                                            let duration_ms = end - start;
+                                            let text =
+                                                format!("{:.1}s", duration_ms as f64 / 1000.0);
+                                            if ui
+                                                .add(
+                                                    egui::Label::new(
+                                                        egui::RichText::new(text).weak(),
+                                                    )
+                                                    .sense(egui::Sense::click()),
+                                                )
+                                                .clicked()
+                                            {
+                                                toggle_requested = true;
+                                            }
+                                        } else if tool.started_at.is_some() {
+                                            if ui
+                                                .add(
+                                                    egui::Label::new(
+                                                        egui::RichText::new("...").weak(),
+                                                    )
+                                                    .sense(egui::Sense::click()),
+                                                )
+                                                .clicked()
+                                            {
+                                                toggle_requested = true;
+                                            }
                                         }
-                                    } else {
-                                        &tool.input
-                                    };
 
-                                    let get_arg = |key: &str| -> Option<String> {
-                                        Self::extract_field_as_string(effective_input, key).or_else(|| {
-                                            effective_input
-                                                .get("parameters")
-                                                .and_then(|p| Self::extract_field_as_string(p, key))
-                                        })
-                                    };
+                                        // Left Side + Middle (Path) - Fills remaining space
+                                        ui.with_layout(
+                                            egui::Layout::left_to_right(egui::Align::Center),
+                                            |ui| {
+                                                // Status Icon
+                                                let status_icon = match tool.status.as_str() {
+                                                    "success" | "completed" => "✅",
+                                                    "error" => "❌",
+                                                    "cancelled" => "🚫",
+                                                    _ => "⏳",
+                                                };
+                                                if ui
+                                                    .add(
+                                                        egui::Label::new(status_icon)
+                                                            .sense(egui::Sense::click()),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    toggle_requested = true;
+                                                }
 
-                                    let summary_text = if let Some(command) = get_arg("command") {
-                                        Some(command)
-                                    } else if let Some(path) = get_arg("filePath")
-                                        .or_else(|| get_arg("path"))
-                                        .or_else(|| get_arg("file_path"))
-                                        .or_else(|| get_arg("filename"))
-                                    {
-                                        Some(path)
-                                    } else if let Some(url) = get_arg("url") {
-                                        Some(url)
-                                    } else if let Some(prompt) = get_arg("prompt") {
-                                        Some(prompt)
-                                    } else {
-                                        None
-                                    };
+                                                // Name
+                                                let name_text =
+                                                    egui::RichText::new(format!("({})", tool.name))
+                                                        .strong()
+                                                        .color(egui::Color32::WHITE);
+                                                if ui
+                                                    .add(
+                                                        egui::Label::new(name_text)
+                                                            .sense(egui::Sense::click()),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    toggle_requested = true;
+                                                }
 
-                                    if let Some(text) = summary_text {
-                                        // Scroll area for full path
-                                        let available = ui.available_width();
-                                        egui::ScrollArea::horizontal()
-                                            .max_width(available)
-                                            .show(ui, |ui| {
-                                                ui.label(
-                                                    egui::RichText::new(text)
-                                                        .monospace()
-                                                        .color(egui::Color32::from_gray(180)),
-                                                );
-                                            });
-                                    } else {
-                                        // Fallback
-                                        ui.label(
-                                            egui::RichText::new("Run")
-                                                .monospace()
-                                                .color(egui::Color32::from_gray(180)),
+                                                // Separator
+                                                let sep_text = egui::RichText::new("  -  ")
+                                                    .color(egui::Color32::from_gray(100));
+                                                if ui
+                                                    .add(
+                                                        egui::Label::new(sep_text)
+                                                            .sense(egui::Sense::click()),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    toggle_requested = true;
+                                                }
+
+                                                // Command Summary
+                                                let parsed_input_store;
+                                                let effective_input = if let Some(s) =
+                                                    tool.input.as_str()
+                                                {
+                                                    if let Ok(val) =
+                                                        serde_json::from_str::<serde_json::Value>(s)
+                                                    {
+                                                        parsed_input_store = val;
+                                                        &parsed_input_store
+                                                    } else {
+                                                        &tool.input
+                                                    }
+                                                } else {
+                                                    &tool.input
+                                                };
+
+                                                let get_arg = |key: &str| -> Option<String> {
+                                                    Self::extract_field_as_string(
+                                                        effective_input,
+                                                        key,
+                                                    )
+                                                    .or_else(|| {
+                                                        effective_input.get("parameters").and_then(
+                                                            |p| {
+                                                                Self::extract_field_as_string(
+                                                                    p, key,
+                                                                )
+                                                            },
+                                                        )
+                                                    })
+                                                };
+
+                                                let summary_text =
+                                                    if let Some(command) = get_arg("command") {
+                                                        Some(command)
+                                                    } else if let Some(path) = get_arg("filePath")
+                                                        .or_else(|| get_arg("path"))
+                                                        .or_else(|| get_arg("file_path"))
+                                                        .or_else(|| get_arg("filename"))
+                                                    {
+                                                        Some(path)
+                                                    } else if let Some(url) = get_arg("url") {
+                                                        Some(url)
+                                                    } else if let Some(prompt) = get_arg("prompt") {
+                                                        Some(prompt)
+                                                    } else {
+                                                        None
+                                                    };
+
+                                                if let Some(text) = summary_text {
+                                                    // Scroll area for full path
+                                                    let available = ui.available_width();
+                                                    egui::ScrollArea::horizontal()
+                                                        .max_width(available)
+                                                        .show(ui, |ui| {
+                                                            ui.label(
+                                                                egui::RichText::new(text)
+                                                                    .monospace()
+                                                                    .color(
+                                                                        egui::Color32::from_gray(
+                                                                            180,
+                                                                        ),
+                                                                    ),
+                                                            );
+                                                        });
+                                                } else {
+                                                    // Fallback
+                                                    ui.label(
+                                                        egui::RichText::new("Run")
+                                                            .monospace()
+                                                            .color(egui::Color32::from_gray(180)),
+                                                    );
+                                                }
+                                            },
                                         );
-                                    }
-                                });
+                                    },
+                                );
                             });
+
+                            if toggle_requested {
+                                is_expanded = !is_expanded;
+                                ui.data_mut(|d| d.insert_temp(id, is_expanded));
+                            }
+
+                            // Permission Row (Inside Header)
+                            if let Some(perm) = perm_opt {
+                                ui.add_space(6.0);
+                                egui::Frame::default()
+                                    .fill(egui::Color32::from_rgba_premultiplied(60, 20, 20, 255))
+                                    .stroke(egui::Stroke::new(
+                                        1.0,
+                                        egui::Color32::from_rgb(180, 50, 50),
+                                    ))
+                                    .corner_radius(4)
+                                    .inner_margin(8.0)
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            if ui.button("❌ Reject").clicked() {
+                                                self.action_respond_permission(
+                                                    perm.session_id.clone(),
+                                                    perm.id.clone(),
+                                                    "reject",
+                                                );
+                                                if let Some(idx) = self
+                                                    .pending_permissions
+                                                    .iter()
+                                                    .position(|p| p.id == perm.id)
+                                                {
+                                                    self.pending_permissions.remove(idx);
+                                                }
+                                            }
+                                            if ui.button("✅ Allow Once").clicked() {
+                                                self.action_respond_permission(
+                                                    perm.session_id.clone(),
+                                                    perm.id.clone(),
+                                                    "once",
+                                                );
+                                                if let Some(idx) = self
+                                                    .pending_permissions
+                                                    .iter()
+                                                    .position(|p| p.id == perm.id)
+                                                {
+                                                    self.pending_permissions.remove(idx);
+                                                }
+                                            }
+                                            if ui.button("✅ Always Allow").clicked() {
+                                                self.action_respond_permission(
+                                                    perm.session_id.clone(),
+                                                    perm.id.clone(),
+                                                    "always",
+                                                );
+                                                if let Some(idx) = self
+                                                    .pending_permissions
+                                                    .iter()
+                                                    .position(|p| p.id == perm.id)
+                                                {
+                                                    self.pending_permissions.remove(idx);
+                                                }
+                                            }
+                                        });
+                                    });
+                            }
                         });
+                    });
 
-                        if toggle_requested {
-                            is_expanded = !is_expanded;
-                            ui.data_mut(|d| d.insert_temp(id, is_expanded));
-                        }
+                // -- Body --
+                if is_expanded {
+                    egui::Frame::new()
+                        .fill(egui::Color32::BLACK)
+                        .corner_radius(egui::CornerRadius {
+                            nw: 0,
+                            ne: 0,
+                            sw: 6,
+                            se: 6,
+                        })
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
+                        .inner_margin(12.0)
+                        .show(ui, |ui| {
+                            ui.set_min_width(ui.available_width());
 
-                        // Permission Row (Inside Header)
-                        if let Some(perm) = perm_opt {
-                            ui.add_space(6.0);
-                            egui::Frame::default()
-                                .fill(egui::Color32::from_rgba_premultiplied(60, 20, 20, 255))
-                                .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(180, 50, 50)))
-                                .corner_radius(4)
-                                .inner_margin(8.0)
-                                .show(ui, |ui| {
+                            // Command
+                            if let Some(command) =
+                                Self::extract_field_as_string(&tool.input, "command")
+                            {
+                                ui.label(
+                                    egui::RichText::new("COMMAND")
+                                        .small()
+                                        .color(egui::Color32::from_gray(120)),
+                                );
+                                ui.add_space(2.0);
+                                let mut text = command.as_str();
+                                let cmd_layout = egui::TextEdit::multiline(&mut text)
+                                    .font(egui::TextStyle::Monospace)
+                                    .code_editor()
+                                    .interactive(false)
+                                    .desired_width(f32::INFINITY);
+                                ui.add(cmd_layout);
+                                ui.add_space(8.0);
+                            }
 
-                                    ui.horizontal(|ui| {
-                                        if ui.button("❌ Reject").clicked() {
-                                            self.action_respond_permission(
-                                                perm.session_id.clone(),
-                                                perm.id.clone(),
-                                                "reject",
-                                            );
-                                            if let Some(idx) = self
-                                                .pending_permissions
-                                                .iter()
-                                                .position(|p| p.id == perm.id)
-                                            {
-                                                self.pending_permissions.remove(idx);
-                                            }
-                                        }
-                                        if ui.button("✅ Allow Once").clicked() {
-                                            self.action_respond_permission(
-                                                perm.session_id.clone(),
-                                                perm.id.clone(),
-                                                "once",
-                                            );
-                                            if let Some(idx) = self
-                                                .pending_permissions
-                                                .iter()
-                                                .position(|p| p.id == perm.id)
-                                            {
-                                                self.pending_permissions.remove(idx);
-                                            }
-                                        }
-                                        if ui.button("✅ Always Allow").clicked() {
-                                            self.action_respond_permission(
-                                                perm.session_id.clone(),
-                                                perm.id.clone(),
-                                                "always",
-                                            );
-                                            if let Some(idx) = self
-                                                .pending_permissions
-                                                .iter()
-                                                .position(|p| p.id == perm.id)
-                                            {
-                                                self.pending_permissions.remove(idx);
-                                            }
+                            // Input Arguments (if not just command)
+                            // Actually show full input if complex?
+                            // Let's hide specific fields if we showed them specially
+                            let mut display_input = tool.input.clone();
+                            if let serde_json::Value::Object(ref mut map) = display_input {
+                                map.remove("command");
+                            }
+                            if !display_input.is_null()
+                                && display_input
+                                    != serde_json::Value::Object(serde_json::Map::new())
+                            {
+                                ui.label(
+                                    egui::RichText::new("INPUT")
+                                        .small()
+                                        .color(egui::Color32::from_gray(120)),
+                                );
+                                ui.add_space(2.0);
+                                ui.monospace(Self::format_json_value(&display_input));
+                                ui.add_space(8.0);
+                            }
+
+                            // Output
+                            if let Some(output) = &tool.output {
+                                ui.label(
+                                    egui::RichText::new("OUTPUT")
+                                        .small()
+                                        .color(egui::Color32::from_gray(120)),
+                                );
+                                ui.add_space(2.0);
+
+                                egui::ScrollArea::vertical()
+                                    .max_height(300.0)
+                                    .show(ui, |ui| {
+                                        let mut text = output.as_str();
+                                        ui.add(
+                                            egui::TextEdit::multiline(&mut text)
+                                                .font(egui::TextStyle::Monospace)
+                                                .code_editor()
+                                                .desired_width(f32::INFINITY)
+                                                .interactive(false),
+                                        );
+                                    });
+                                ui.add_space(8.0);
+                            }
+
+                            // Error
+                            if let Some(error) = &tool.error {
+                                ui.label(
+                                    egui::RichText::new("ERROR")
+                                        .small()
+                                        .color(egui::Color32::RED),
+                                );
+                                ui.add_space(2.0);
+                                ui.colored_label(egui::Color32::RED, error);
+                                ui.add_space(8.0);
+                            }
+
+                            // Logs
+                            if !tool.logs.is_empty() {
+                                ui.label(
+                                    egui::RichText::new("LOGS")
+                                        .small()
+                                        .color(egui::Color32::from_gray(120)),
+                                );
+                                egui::ScrollArea::vertical()
+                                    .max_height(150.0)
+                                    .show(ui, |ui| {
+                                        for log in &tool.logs {
+                                            ui.monospace(log);
                                         }
                                     });
-                                });
-                        }
-                    });
-                });
+                            }
+                        });
+                }
 
-            // -- Body --
-            if is_expanded {
-                egui::Frame::new()
-                    .fill(egui::Color32::BLACK)
-                    .corner_radius(egui::CornerRadius {
-                        nw: 0,
-                        ne: 0,
-                        sw: 6,
-                        se: 6,
-                    })
-                    .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)))
-                    .inner_margin(12.0)
-                    .show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-
-                        // Command
-                        if let Some(command) = Self::extract_field_as_string(&tool.input, "command")
-                        {
-                            ui.label(
-                                egui::RichText::new("COMMAND")
-                                    .small()
-                                    .color(egui::Color32::from_gray(120)),
-                            );
-                            ui.add_space(2.0);
-                            let mut text = command.as_str();
-                            let cmd_layout = egui::TextEdit::multiline(&mut text)
-                                .font(egui::TextStyle::Monospace)
-                                .code_editor()
-                                .interactive(false)
-                                .desired_width(f32::INFINITY);
-                            ui.add(cmd_layout);
-                            ui.add_space(8.0);
-                        }
-
-                        // Input Arguments (if not just command)
-                        // Actually show full input if complex?
-                        // Let's hide specific fields if we showed them specially
-                        let mut display_input = tool.input.clone();
-                        if let serde_json::Value::Object(ref mut map) = display_input {
-                            map.remove("command");
-                        }
-                        if !display_input.is_null()
-                            && display_input != serde_json::Value::Object(serde_json::Map::new())
-                        {
-                            ui.label(
-                                egui::RichText::new("INPUT")
-                                    .small()
-                                    .color(egui::Color32::from_gray(120)),
-                            );
-                            ui.add_space(2.0);
-                            ui.monospace(Self::format_json_value(&display_input));
-                            ui.add_space(8.0);
-                        }
-
-                        // Output
-                        if let Some(output) = &tool.output {
-                            ui.label(
-                                egui::RichText::new("OUTPUT")
-                                    .small()
-                                    .color(egui::Color32::from_gray(120)),
-                            );
-                            ui.add_space(2.0);
-
-                            egui::ScrollArea::vertical()
-                                .max_height(300.0)
-                                .show(ui, |ui| {
-                                    let mut text = output.as_str();
-                                    ui.add(
-                                        egui::TextEdit::multiline(&mut text)
-                                            .font(egui::TextStyle::Monospace)
-                                            .code_editor()
-                                            .desired_width(f32::INFINITY)
-                                            .interactive(false),
-                                    );
-                                });
-                            ui.add_space(8.0);
-                        }
-
-                        // Error
-                        if let Some(error) = &tool.error {
-                            ui.label(
-                                egui::RichText::new("ERROR")
-                                    .small()
-                                    .color(egui::Color32::RED),
-                            );
-                            ui.add_space(2.0);
-                            ui.colored_label(egui::Color32::RED, error);
-                            ui.add_space(8.0);
-                        }
-
-                        // Logs
-                        if !tool.logs.is_empty() {
-                            ui.label(
-                                egui::RichText::new("LOGS")
-                                    .small()
-                                    .color(egui::Color32::from_gray(120)),
-                            );
-                            egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
-                                for log in &tool.logs {
-                                    ui.monospace(log);
-                                }
-                            });
-                        }
-                    });
-            }
-
-            ui.add_space(8.0); // Spacing between blocks
-        }); });
+                ui.add_space(8.0); // Spacing between blocks
+            });
+        });
     }
 
     fn extract_field_as_string(value: &serde_json::Value, key: &str) -> Option<String> {
@@ -1679,7 +1743,6 @@ impl OpenCodeApp {
             other => format!("{other}"),
         }
     }
-
 
     fn action_start_only(&mut self, ctx: &egui::Context) {
         if self.server_in_flight || self.runtime.is_none() {
@@ -2013,7 +2076,6 @@ impl eframe::App for OpenCodeApp {
                         });
                     }
                 }
-
             });
         });
 
@@ -2247,10 +2309,7 @@ impl eframe::App for OpenCodeApp {
                             ui.add_space(8.0);
 
                             let prev_subagents = self.show_subagents;
-                            ui.checkbox(
-                                &mut self.show_subagents,
-                                "Show subagents in agent list",
-                            );
+                            ui.checkbox(&mut self.show_subagents, "Show subagents in agent list");
                             if self.show_subagents != prev_subagents {
                                 let filtered =
                                     Self::filtered_agents(self.show_subagents, &self.agents);
@@ -2620,118 +2679,118 @@ impl eframe::App for OpenCodeApp {
                         ui.spacing_mut().item_spacing.x = 8.0;
 
                         // Left side: model selector and active agent label
-                        ui.with_layout(
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                if !self.models_config.get_curated_models().is_empty() {
-                                    let current_display = if let Some((provider, model_id)) = &tab.selected_model {
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            if !self.models_config.get_curated_models().is_empty() {
+                                let current_display =
+                                    if let Some((provider, model_id)) = &tab.selected_model {
                                         self.models_config
                                             .get_curated_models()
                                             .iter()
-                                            .find(|m| &m.provider == provider && &m.model_id == model_id)
+                                            .find(|m| {
+                                                &m.provider == provider && &m.model_id == model_id
+                                            })
                                             .map(|m| m.name.clone())
                                             .unwrap_or_else(|| format!("{provider}/{model_id}"))
                                     } else {
                                         match &self.auth_sync_state.status {
-                                            crate::startup::auth::AuthSyncStatus::InProgress => "\u{23F3}".to_string(),
-                                            crate::startup::auth::AuthSyncStatus::Complete => "(default)".to_string(),
-                                            crate::startup::auth::AuthSyncStatus::Failed(_) => "\u{274C}".to_string(),
+                                            crate::startup::auth::AuthSyncStatus::InProgress => {
+                                                "\u{23F3}".to_string()
+                                            }
+                                            crate::startup::auth::AuthSyncStatus::Complete => {
+                                                "(default)".to_string()
+                                            }
+                                            crate::startup::auth::AuthSyncStatus::Failed(_) => {
+                                                "\u{274C}".to_string()
+                                            }
                                             _ => "...".to_string(),
                                         }
                                     };
 
-                                    egui::ComboBox::from_id_salt("footer_model_selector")
-                                        .selected_text(current_display)
-                                        .width(160.0)
-                                        .show_ui(ui, |ui| {
+                                egui::ComboBox::from_id_salt("footer_model_selector")
+                                    .selected_text(current_display)
+                                    .width(160.0)
+                                    .show_ui(ui, |ui| {
+                                        if ui
+                                            .selectable_label(
+                                                tab.selected_model.is_none(),
+                                                "(use default)",
+                                            )
+                                            .clicked()
+                                        {
+                                            tab.selected_model = None;
+                                        }
+
+                                        ui.separator();
+
+                                        for model in self.models_config.get_curated_models() {
+                                            let is_selected = tab
+                                                .selected_model
+                                                .as_ref()
+                                                .map(|(p, m)| {
+                                                    p == &model.provider && m == &model.model_id
+                                                })
+                                                .unwrap_or(false);
+
                                             if ui
-                                                .selectable_label(
-                                                    tab.selected_model.is_none(),
-                                                    "(use default)",
-                                                )
+                                                .selectable_label(is_selected, &model.name)
                                                 .clicked()
                                             {
-                                                tab.selected_model = None;
+                                                tab.selected_model = Some((
+                                                    model.provider.clone(),
+                                                    model.model_id.clone(),
+                                                ));
                                             }
+                                        }
 
-                                            ui.separator();
+                                        ui.separator();
 
-                                            for model in self.models_config.get_curated_models() {
-                                                let is_selected = tab
-                                                    .selected_model
-                                                    .as_ref()
-                                                    .map(|(p, m)| {
-                                                        p == &model.provider && m == &model.model_id
-                                                    })
-                                                    .unwrap_or(false);
+                                        if ui.small_button("\u{2699} Manage Models").clicked() {
+                                            self.show_settings = true;
+                                            ui.close();
+                                        }
+                                    });
+                            }
 
-                                                if ui
-                                                    .selectable_label(is_selected, &model.name)
-                                                    .clicked()
-                                                {
-                                                    tab.selected_model = Some((
-                                                        model.provider.clone(),
-                                                        model.model_id.clone(),
-                                                    ));
-                                                }
-                                            }
+                            let agent_display = tab
+                                .selected_agent
+                                .as_deref()
+                                .unwrap_or(self.default_agent.as_str());
+                            ui.small(format!("agent: {agent_display}"));
 
-                                            ui.separator();
-
-                                            if ui.small_button("\u{2699} Manage Models").clicked() {
-                                                self.show_settings = true;
-                                                ui.close();
-                                            }
-                                        });
-                                }
-
-                                let agent_display = tab
-                                    .selected_agent
-                                    .as_deref()
-                                    .unwrap_or(self.default_agent.as_str());
-                                ui.small(format!("agent: {agent_display}"));
-
-                                let current_dir: Option<&str> = if let Some(override_dir) =
-                                    self.config.server.directory_override.as_deref()
-                                {
-                                    Some(override_dir)
-                                } else {
-                                    tab.directory.as_deref()
-                                };
-                                if let Some(dir) = current_dir {
-                                    ui.separator();
-                                    ui.small("CWD");
-                                    ui.separator();
-                                    ui.small(dir);
-                                }
-                            },
-                        );
+                            let current_dir: Option<&str> = if let Some(override_dir) =
+                                self.config.server.directory_override.as_deref()
+                            {
+                                Some(override_dir)
+                            } else {
+                                tab.directory.as_deref()
+                            };
+                            if let Some(dir) = current_dir {
+                                ui.separator();
+                                ui.small("CWD");
+                                ui.separator();
+                                ui.small(dir);
+                            }
+                        });
 
                         // Right side: server status and settings button
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                if ui.button("\u{2699} Settings").clicked() {
-                                    self.show_settings = !self.show_settings;
-                                }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.button("\u{2699} Settings").clicked() {
+                                self.show_settings = !self.show_settings;
+                            }
 
-                                if let Some(ver) = tab.session_version.as_ref() {
-                                    ui.small(format!("v{}", ver));
-                                    ui.separator();
-                                }
+                            if let Some(ver) = tab.session_version.as_ref() {
+                                ui.small(format!("v{}", ver));
+                                ui.separator();
+                            }
 
-                                if let Some(info) = &self.server {
-                                    ui.small(format!(
-                                        "Server: {} (PID {})",
-                                        info.base_url, info.pid
-                                    ));
-                                } else if self.server_in_flight {
-                                    ui.small("Server: connecting…");
-                                } else {
-                                    ui.small("Server: not connected");
-                                }
-                            },
-                        );
+                            if let Some(info) = &self.server {
+                                ui.small(format!("Server: {} (PID {})", info.base_url, info.pid));
+                            } else if self.server_in_flight {
+                                ui.small("Server: connecting…");
+                            } else {
+                                ui.small("Server: not connected");
+                            }
+                        });
                     });
                 }
             });
@@ -2741,7 +2800,11 @@ impl eframe::App for OpenCodeApp {
                 ui.horizontal(|ui| {
                     ui.heading("Agents");
                     if ui
-                        .small_button(if self.agents_pane_collapsed { "▸" } else { "▾" })
+                        .small_button(if self.agents_pane_collapsed {
+                            "▸"
+                        } else {
+                            "▾"
+                        })
                         .clicked()
                     {
                         self.agents_pane_collapsed = !self.agents_pane_collapsed;
@@ -2801,7 +2864,6 @@ impl eframe::App for OpenCodeApp {
                 ui.set_min_height(72.0);
                 ui.take_available_height();
 
-
                 if self.tabs.is_empty() {
                     return;
                 }
@@ -2839,12 +2901,7 @@ impl eframe::App for OpenCodeApp {
                                                     let encoder = PngEncoder::new(&mut png_data);
                                                     let color_type = ExtendedColorType::Rgba8;
                                                     if encoder
-                                                        .write_image(
-                                                            &img.bytes,
-                                                            w,
-                                                            h,
-                                                            color_type,
-                                                        )
+                                                        .write_image(&img.bytes, w, h, color_type)
                                                         .is_ok()
                                                     {
                                                         let _ = tx.send(UiMsg::AttachmentAdded(
@@ -2860,9 +2917,9 @@ impl eframe::App for OpenCodeApp {
                                 }
 
                                 let scroll_height = ui.available_height();
-                                egui::ScrollArea::vertical()
-                                    .max_height(scroll_height)
-                                    .show(ui, |ui| {
+                                egui::ScrollArea::vertical().max_height(scroll_height).show(
+                                    ui,
+                                    |ui| {
                                         if !tab.pending_attachments.is_empty() {
                                             ui.spacing_mut().item_spacing.x = 4.0;
                                             let mut remove_idx = None;
@@ -2882,241 +2939,219 @@ impl eframe::App for OpenCodeApp {
                                                 tab.pending_attachments.remove(idx);
                                             }
                                         }
-                                    });
+                                    },
+                                );
                             });
                         });
 
                         // Remaining area: center (prompt) + right (actions)
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::TOP),
-                            |ui| {
-                                let panel_height = ui.available_height();
-                                let side_width = 200.0;
-                                let side_size = egui::vec2(side_width, panel_height);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                            let panel_height = ui.available_height();
+                            let side_width = 200.0;
+                            let side_size = egui::vec2(side_width, panel_height);
 
-                                // Right column: actions panel
-                                ui.allocate_ui(side_size, |ui| {
-                                    ui.vertical(|ui| {
-                                        if streaming {
-                                            if ui
-                                                .add_enabled(
-                                                    has_session,
-                                                    egui::Button::new("Stop"),
-                                                )
-                                                .clicked()
-                                            {
-                                                let sid_clone = tab.session_id.clone();
-
-                                                if let (Some(client), Some(sid)) =
-                                                    (&self.client, sid_clone)
-                                                {
-                                                    Self::cancel_active_response(tab);
-                                                    let c = client.clone();
-                                                    let sid_for_abort = sid.clone();
-                                                    if let Some(rt) = &self.runtime {
-                                                        rt.spawn(async move {
-                                                            let _ = c
-                                                                .abort_session(&sid_for_abort)
-                                                                .await;
-                                                            tokio::time::sleep(
-                                                                std::time::Duration::from_millis(
-                                                                    200,
-                                                                ),
-                                                            )
-                                                            .await;
-                                                            let _ = c
-                                                                .abort_session(&sid_for_abort)
-                                                                .await;
-                                                        });
-                                                    }
-                                                }
-                                            }
-                                        }
-
-                                        let send_enabled = has_session
-                                            && !blocked
-                                            && !streaming
-                                            && (!tab.input.trim().is_empty()
-                                                || !tab.pending_attachments.is_empty());
+                            // Right column: actions panel
+                            ui.allocate_ui(side_size, |ui| {
+                                ui.vertical(|ui| {
+                                    if streaming {
                                         if ui
-                                            .add_enabled(
-                                                send_enabled,
-                                                egui::Button::new("Send"),
-                                            )
+                                            .add_enabled(has_session, egui::Button::new("Stop"))
                                             .clicked()
                                         {
-                                            if let (Some(client), Some(sid)) =
-                                                (&self.client, &tab.session_id)
-                                            {
-                                                tab.suppress_incoming = false;
-                                                tab.last_send_at =
-                                                    match SystemTime::now().duration_since(
-                                                        UNIX_EPOCH,
-                                                    ) {
-                                                        Ok(dur) => dur.as_millis() as i64,
-                                                        Err(_) => 0,
-                                                    };
+                                            let sid_clone = tab.session_id.clone();
 
-                                                let text = tab.input.clone();
-                                                let model = tab.selected_model.clone();
-                                                let agent = tab
-                                                    .selected_agent
-                                                    .clone()
-                                                    .unwrap_or_else(|| {
-                                                        self.default_agent.clone()
-                                                    });
-                                                tab.input.clear();
-                                                let mut parts = Vec::new();
-                                                if !text.is_empty() {
-                                                    parts.push(
-                                                        crate::types::models::MessagePart::Text {
-                                                            text,
-                                                        },
-                                                    );
-                                                }
-                                                for att in &tab.pending_attachments {
-                                                    let b64 = base64::engine::general_purpose::STANDARD
-                                                        .encode(&att.data);
-                                                    parts.push(
-                                                        crate::types::models::MessagePart::File {
-                                                            mime: att.mime.clone(),
-                                                            filename: None,
-                                                            url: format!(
-                                                                "data:{};base64,{}",
-                                                                att.mime, b64
-                                                            ),
-                                                        },
-                                                    );
-                                                }
-                                                tab.pending_attachments.clear();
+                                            if let (Some(client), Some(sid)) =
+                                                (&self.client, sid_clone)
+                                            {
+                                                Self::cancel_active_response(tab);
                                                 let c = client.clone();
-                                                let sid = sid.clone();
+                                                let sid_for_abort = sid.clone();
                                                 if let Some(rt) = &self.runtime {
                                                     rt.spawn(async move {
-                                                        let _ = c
-                                                            .send_message(
-                                                                &sid,
-                                                                parts,
-                                                                model,
-                                                                Some(agent),
-                                                            )
-                                                            .await;
+                                                        let _ =
+                                                            c.abort_session(&sid_for_abort).await;
+                                                        tokio::time::sleep(
+                                                            std::time::Duration::from_millis(200),
+                                                        )
+                                                        .await;
+                                                        let _ =
+                                                            c.abort_session(&sid_for_abort).await;
                                                     });
                                                 }
                                             }
                                         }
+                                    }
 
-                                        if !has_session {
-                                            ui.small("(Wait...)");
-                                        }
-                                        if has_session && streaming {
-                                            ui.small("Stop to cancel response");
-                                        }
-                                        if has_session && !blocked && !streaming {
-                                            if self.audio_tx.is_some() {
-                                                ui.small("⌘+Enter\nAltRight: Record");
-                                            } else {
-                                                ui.small("⌘+Enter");
+                                    let send_enabled = has_session
+                                        && !blocked
+                                        && !streaming
+                                        && (!tab.input.trim().is_empty()
+                                            || !tab.pending_attachments.is_empty());
+                                    if ui
+                                        .add_enabled(send_enabled, egui::Button::new("Send"))
+                                        .clicked()
+                                    {
+                                        if let (Some(client), Some(sid)) =
+                                            (&self.client, &tab.session_id)
+                                        {
+                                            tab.suppress_incoming = false;
+                                            tab.last_send_at = match SystemTime::now()
+                                                .duration_since(UNIX_EPOCH)
+                                            {
+                                                Ok(dur) => dur.as_millis() as i64,
+                                                Err(_) => 0,
+                                            };
+
+                                            let text = tab.input.clone();
+                                            let model = tab.selected_model.clone();
+                                            let agent = tab
+                                                .selected_agent
+                                                .clone()
+                                                .unwrap_or_else(|| self.default_agent.clone());
+                                            tab.input.clear();
+                                            let mut parts = Vec::new();
+                                            if !text.is_empty() {
+                                                parts.push(
+                                                    crate::types::models::MessagePart::Text {
+                                                        text,
+                                                    },
+                                                );
+                                            }
+                                            for att in &tab.pending_attachments {
+                                                let b64 = base64::engine::general_purpose::STANDARD
+                                                    .encode(&att.data);
+                                                parts.push(
+                                                    crate::types::models::MessagePart::File {
+                                                        mime: att.mime.clone(),
+                                                        filename: None,
+                                                        url: format!(
+                                                            "data:{};base64,{}",
+                                                            att.mime, b64
+                                                        ),
+                                                    },
+                                                );
+                                            }
+                                            tab.pending_attachments.clear();
+                                            let c = client.clone();
+                                            let sid = sid.clone();
+                                            if let Some(rt) = &self.runtime {
+                                                rt.spawn(async move {
+                                                    let _ = c
+                                                        .send_message(
+                                                            &sid,
+                                                            parts,
+                                                            model,
+                                                            Some(agent),
+                                                        )
+                                                        .await;
+                                                });
                                             }
                                         }
-                                    });
+                                    }
+
+                                    if !has_session {
+                                        ui.small("(Wait...)");
+                                    }
+                                    if has_session && streaming {
+                                        ui.small("Stop to cancel response");
+                                    }
+                                    if has_session && !blocked && !streaming {
+                                        if self.audio_tx.is_some() {
+                                            ui.small("⌘+Enter\nAltRight: Record");
+                                        } else {
+                                            ui.small("⌘+Enter");
+                                        }
+                                    }
                                 });
+                            });
 
-                                // Center column: prompt input
-                                let center_height = ui.available_height();
-                                let center_width = ui.available_width();
-                                let text_height = center_height;
-                                let row_height =
-                                    ui.text_style_height(&egui::TextStyle::Body);
-                                let rows = (text_height / row_height)
-                                    .floor()
-                                    .max(3.0) as usize;
+                            // Center column: prompt input
+                            let center_height = ui.available_height();
+                            let center_width = ui.available_width();
+                            let text_height = center_height;
+                            let row_height = ui.text_style_height(&egui::TextStyle::Body);
+                            let rows = (text_height / row_height).floor().max(3.0) as usize;
 
-                                egui::ScrollArea::vertical()
-                                    .max_height(text_height)
-                                    .show(ui, |ui| {
-                                        let _response = ui.add_enabled(
-                                            has_session && !blocked,
-                                            egui::TextEdit::multiline(&mut tab.input)
-                                                .desired_width(center_width)
-                                                .desired_rows(rows),
-                                        );
+                            egui::ScrollArea::vertical()
+                                .max_height(text_height)
+                                .show(ui, |ui| {
+                                    let _response = ui.add_enabled(
+                                        has_session && !blocked,
+                                        egui::TextEdit::multiline(&mut tab.input)
+                                            .desired_width(center_width)
+                                            .desired_rows(rows),
+                                    );
 
-                                        // Send on Cmd+Enter (macOS)
-                                        let send_key = ui.input(|i| {
-                                            i.modifiers.command
-                                                && i.key_pressed(egui::Key::Enter)
-                                        });
+                                    // Send on Cmd+Enter (macOS)
+                                    let send_key = ui.input(|i| {
+                                        i.modifiers.command && i.key_pressed(egui::Key::Enter)
+                                    });
 
-                                        let send_enabled = has_session
-                                            && !blocked
-                                            && !streaming
-                                            && (!tab.input.trim().is_empty()
-                                                || !tab.pending_attachments.is_empty());
-                                        if send_key && send_enabled {
-                                            if let (Some(client), Some(sid)) =
-                                                (&self.client, &tab.session_id)
+                                    let send_enabled = has_session
+                                        && !blocked
+                                        && !streaming
+                                        && (!tab.input.trim().is_empty()
+                                            || !tab.pending_attachments.is_empty());
+                                    if send_key && send_enabled {
+                                        if let (Some(client), Some(sid)) =
+                                            (&self.client, &tab.session_id)
+                                        {
+                                            tab.suppress_incoming = false;
+                                            tab.last_send_at = match SystemTime::now()
+                                                .duration_since(UNIX_EPOCH)
                                             {
-                                                tab.suppress_incoming = false;
-                                                tab.last_send_at =
-                                                    match SystemTime::now().duration_since(
-                                                        UNIX_EPOCH,
-                                                    ) {
-                                                        Ok(dur) => dur.as_millis() as i64,
-                                                        Err(_) => 0,
-                                                    };
+                                                Ok(dur) => dur.as_millis() as i64,
+                                                Err(_) => 0,
+                                            };
 
-                                                let text = tab.input.clone();
-                                                let model = tab.selected_model.clone();
-                                                let agent = tab
-                                                    .selected_agent
-                                                    .clone()
-                                                    .unwrap_or_else(|| {
-                                                        self.default_agent.clone()
-                                                    });
-                                                tab.input.clear();
-                                                let mut parts = Vec::new();
-                                                if !text.is_empty() {
-                                                    parts.push(
-                                                        crate::types::models::MessagePart::Text {
-                                                            text,
-                                                        },
-                                                    );
-                                                }
-                                                for att in &tab.pending_attachments {
-                                                    let b64 = base64::engine::general_purpose::STANDARD
-                                                        .encode(&att.data);
-                                                    parts.push(
-                                                        crate::types::models::MessagePart::File {
-                                                            mime: att.mime.clone(),
-                                                            filename: None,
-                                                            url: format!(
-                                                                "data:{};base64,{}",
-                                                                att.mime, b64
-                                                            ),
-                                                        },
-                                                    );
-                                                }
-                                                tab.pending_attachments.clear();
-                                                let c = client.clone();
-                                                let sid = sid.clone();
-                                                if let Some(rt) = &self.runtime {
-                                                    rt.spawn(async move {
-                                                        let _ = c
-                                                            .send_message(
-                                                                &sid,
-                                                                parts,
-                                                                model,
-                                                                Some(agent),
-                                                            )
-                                                            .await;
-                                                    });
-                                                }
+                                            let text = tab.input.clone();
+                                            let model = tab.selected_model.clone();
+                                            let agent = tab
+                                                .selected_agent
+                                                .clone()
+                                                .unwrap_or_else(|| self.default_agent.clone());
+                                            tab.input.clear();
+                                            let mut parts = Vec::new();
+                                            if !text.is_empty() {
+                                                parts.push(
+                                                    crate::types::models::MessagePart::Text {
+                                                        text,
+                                                    },
+                                                );
+                                            }
+                                            for att in &tab.pending_attachments {
+                                                let b64 = base64::engine::general_purpose::STANDARD
+                                                    .encode(&att.data);
+                                                parts.push(
+                                                    crate::types::models::MessagePart::File {
+                                                        mime: att.mime.clone(),
+                                                        filename: None,
+                                                        url: format!(
+                                                            "data:{};base64,{}",
+                                                            att.mime, b64
+                                                        ),
+                                                    },
+                                                );
+                                            }
+                                            tab.pending_attachments.clear();
+                                            let c = client.clone();
+                                            let sid = sid.clone();
+                                            if let Some(rt) = &self.runtime {
+                                                rt.spawn(async move {
+                                                    let _ = c
+                                                        .send_message(
+                                                            &sid,
+                                                            parts,
+                                                            model,
+                                                            Some(agent),
+                                                        )
+                                                        .await;
+                                                });
                                             }
                                         }
-                                    });
-                            },
-                        );
+                                    }
+                                });
+                        });
                     });
                 }
             });

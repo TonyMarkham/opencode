@@ -53,8 +53,9 @@ pub fn discover() -> Result<Option<ServerInfo>, DiscoveryError> {
         };
 
         // Heuristic: bun/node running opencode, or standalone opencode binary
-        let is_candidate = (name.contains("bun") || name.contains("node") || name.contains("opencode"))
-            && (command.contains("opencode") || name.contains("opencode"));
+        let is_candidate =
+            (name.contains("bun") || name.contains("node") || name.contains("opencode"))
+                && (command.contains("opencode") || name.contains("opencode"));
 
         if !is_candidate {
             continue;

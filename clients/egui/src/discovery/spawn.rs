@@ -26,8 +26,7 @@ pub async fn spawn_and_wait() -> Result<ServerInfo, SpawnError> {
                 return Err(SpawnError::Spawn(err.to_string()));
             }
 
-            let exe = std::env::current_exe()
-                .map_err(|e| SpawnError::Spawn(e.to_string()))?;
+            let exe = std::env::current_exe().map_err(|e| SpawnError::Spawn(e.to_string()))?;
             let dir = exe
                 .parent()
                 .ok_or_else(|| SpawnError::Spawn("missing exe dir".to_string()))?;
