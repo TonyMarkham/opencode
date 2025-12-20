@@ -44,6 +44,78 @@ If you don't want to use cargo-make:
 
 Alternatively, configure a custom model path in Settings > Audio.
 
+## Building the OpenCode Server
+
+The EGUI client requires the OpenCode server to be running. You can either use an existing server or build one from source.
+
+### Prerequisites
+
+- **Bun** 1.3.3 or later (the strict version check has been removed)
+- **Node modules**: The server requires the `opencode-openai-codex-auth` plugin to be pre-installed
+
+### Build Instructions
+
+1. **Navigate to the server directory**:
+   ```bash
+   cd packages/opencode
+   ```
+
+2. **Pre-install required plugins**:
+   ```bash
+   # On Windows
+   bun add opencode-openai-codex-auth --cwd C:\Users\<YourUsername>\.cache\opencode
+   
+   # On Linux/macOS
+   bun add opencode-openai-codex-auth --cwd ~/.cache/opencode
+   ```
+
+3. **Build the server**:
+   ```bash
+   # Default: builds for current platform only
+   bun run build
+   
+   # With custom version
+   bun run build --version=1.0.134.pre.4
+   
+   # Build for all platforms (for releases)
+   bun run build --all
+   
+   # Skip dependency installation (faster rebuilds)
+   bun run build --skip-install
+   ```
+
+### Build Output
+
+The compiled server binary will be located at:
+- **Windows**: `packages/opencode/dist/opencode-windows-x64/bin/opencode.exe`
+- **Linux**: `packages/opencode/dist/opencode-linux-x64/bin/opencode`
+- **macOS (Apple Silicon)**: `packages/opencode/dist/opencode-darwin-arm64/bin/opencode`
+- **macOS (Intel)**: `packages/opencode/dist/opencode-darwin-x64/bin/opencode`
+
+### Running the Server
+
+```bash
+# From repository root
+./packages/opencode/dist/opencode-windows-x64/bin/opencode.exe serve
+
+# With custom port/hostname
+./packages/opencode/dist/opencode-windows-x64/bin/opencode.exe serve --port 3000 --hostname 0.0.0.0
+```
+
+The server will start and print:
+```
+opencode server listening on http://127.0.0.1:<port>
+```
+
+### Server Discovery
+
+The EGUI client automatically discovers running OpenCode servers by:
+1. Scanning for processes named `opencode`, `bun`, or `node` running the OpenCode server
+2. Finding the port the server is listening on
+3. Connecting to `http://127.0.0.1:<port>`
+
+If no server is found, the client will attempt to spawn one automatically.
+
 ## Features
 
 - Auto server discovery and spawning

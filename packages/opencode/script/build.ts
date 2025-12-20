@@ -12,11 +12,17 @@ const dir = path.resolve(__dirname, "..")
 
 process.chdir(dir)
 
-import pkg from "../package.json"
-import { Script } from "@opencode-ai/script"
-
-const singleFlag = process.argv.includes("--single")
+const allFlag = process.argv.includes("--all")
 const skipInstall = process.argv.includes("--skip-install")
+const versionFlag = process.argv.find(arg => arg.startsWith("--version="))?.split("=")[1]
+
+// Set OPENCODE_VERSION from flag if provided BEFORE importing Script
+if (versionFlag) {
+  process.env.OPENCODE_VERSION = versionFlag
+}
+
+import pkg from "../package.json"
+const { Script } = await import("@opencode-ai/script")
 
 const allTargets: {
   os: string
@@ -77,9 +83,10 @@ const allTargets: {
   },
 ]
 
-const targets = singleFlag
-  ? allTargets.filter((item) => item.os === process.platform && item.arch === process.arch)
-  : allTargets
+// Default to building for current platform only, use --all to build for all platforms
+const targets = allFlag
+  ? allTargets
+  : allTargets.filter((item) => item.os === process.platform && item.arch === process.arch && item.avx2 !== false)
 
 await $`rm -rf dist`
 

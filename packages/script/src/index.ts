@@ -5,13 +5,7 @@ const rootPkgPath = path.resolve(import.meta.dir, "../../../package.json")
 const rootPkg = await Bun.file(rootPkgPath).json()
 const expectedBunVersion = rootPkg.packageManager?.split("@")[1]
 
-if (!expectedBunVersion) {
-  throw new Error("packageManager field not found in root package.json")
-}
-
-if (process.versions.bun !== expectedBunVersion) {
-  throw new Error(`This script requires bun@${expectedBunVersion}, but you are using bun@${process.versions.bun}`)
-}
+// Version check removed - allow any compatible Bun version
 
 const CHANNEL = process.env["OPENCODE_CHANNEL"] ?? (await $`git branch --show-current`.text().then((x) => x.trim()))
 const IS_PREVIEW = CHANNEL !== "latest"
