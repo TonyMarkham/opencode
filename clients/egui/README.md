@@ -146,6 +146,23 @@ If no server is found, the client will attempt to spawn one automatically.
 - Speech-to-text (push-to-talk with AltRight)
 - Configurable UI (fonts, chat density)
 
+## Authentication
+
+### Anthropic Pro/Max OAuth
+
+To use your Claude subscription instead of paying for API usage:
+
+1. Run the OAuth flow:
+   ```bash
+   cargo run -- --oauth
+   ```
+2. Follow the instructions to authenticate in your browser.
+3. Once authenticated, restart the app normally:
+   ```bash
+   cargo run
+   ```
+   The client will automatically use your OAuth token and default to the `claude-3-5-sonnet` model.
+
 ## Architecture
 
 See [EGUI_PLAN.md](./EGUI_PLAN.md) and [STT_PLAN.md](./STT_PLAN.md) for detailed architecture and implementation plans.

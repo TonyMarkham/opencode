@@ -29,6 +29,7 @@ pub struct OpencodeClient {
     base: Url,
     http: reqwest::Client,
     pub directory: Option<PathBuf>,
+    pub oauth_token: Option<String>,
 }
 
 impl OpencodeClient {
@@ -41,15 +42,25 @@ impl OpencodeClient {
                 .build()
                 .map_err(|e| ApiError::Http(e.to_string()))?,
             directory: None,
+            oauth_token: None,
         })
     }
+    
+    pub fn set_oauth_token(&mut self, token: String) {
+        self.oauth_token = Some(token);
+    }
 
-    fn with_dir(&self, mut req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    fn prepare_request(&self, mut req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         if let Some(dir) = &self.directory {
             if let Some(d) = dir.to_str() {
                 req = req.header("x-opencode-directory", d);
             }
         }
+        
+        if let Some(token) = &self.oauth_token {
+             req = req.header("Authorization", format!("Bearer {}", token));
+        }
+        
         req
     }
 
@@ -77,7 +88,7 @@ impl OpencodeClient {
             .join("session")
             .map_err(|e| ApiError::Url(e.to_string()))?;
         let resp = self
-            .with_dir(self.http.get(url))
+            .prepare_request(self.http.get(url))
             .send()
             .await
             .map_err(|e| ApiError::Http(e.to_string()))?;
@@ -94,7 +105,7 @@ impl OpencodeClient {
             .join("agent")
             .map_err(|e| ApiError::Url(e.to_string()))?;
         let resp = self
-            .with_dir(self.http.get(url))
+            .prepare_request(self.http.get(url))
             .send()
             .await
             .map_err(|e| ApiError::Http(e.to_string()))?;
@@ -115,7 +126,7 @@ impl OpencodeClient {
             None => serde_json::json!({}),
         };
         let resp = self
-            .with_dir(self.http.post(url).json(&body))
+            .prepare_request(self.http.post(url).json(&body))
             .send()
             .await
             .map_err(|e| ApiError::Http(e.to_string()))?;
@@ -132,7 +143,7 @@ impl OpencodeClient {
             .join(&format!("session/{id}"))
             .map_err(|e| ApiError::Url(e.to_string()))?;
         let resp = self
-            .with_dir(self.http.delete(url))
+            .prepare_request(self.http.delete(url))
             .send()
             .await
             .map_err(|e| ApiError::Http(e.to_string()))?;
@@ -158,7 +169,7 @@ impl OpencodeClient {
         };
 
         let resp = self
-            .with_dir(self.http.post(url).json(&body))
+            .prepare_request(self.http.post(url).json(&body))
             .send()
             .await
             .map_err(|e| ApiError::Http(e.to_string()))?;
@@ -180,7 +191,7 @@ impl OpencodeClient {
             .map_err(|e| ApiError::Url(e.to_string()))?;
         let body = serde_json::json!({ "response": response });
         let resp = self
-            .with_dir(self.http.post(url).json(&body))
+            .prepare_request(self.http.post(url).json(&body))
             .send()
             .await
             .map_err(|e| ApiError::Http(e.to_string()))?;
@@ -196,7 +207,7 @@ impl OpencodeClient {
             .join(&format!("session/{session_id}/abort"))
             .map_err(|e| ApiError::Url(e.to_string()))?;
         let resp = self
-            .with_dir(self.http.post(url))
+            .prepare_request(self.http.post(url))
             .send()
             .await
             .map_err(|e| ApiError::Http(e.to_string()))?;
@@ -205,4 +216,24 @@ impl OpencodeClient {
         }
         Ok(true)
     }
+
+    pub async fn get_provider_status(&self) -> Result<ProviderStatus, ApiError> {
+        let url = self
+            .base
+            .join("provider")
+            .map_err(|e| ApiError::Url(e.to_string()))?;
+        let resp = self
+            .prepare_request(self.http.get(url))
+            .send()
+            .await
+            .map_err(|e| ApiError::Http(e.to_string()))?;
+        resp.json()
+            .await
+            .map_err(|e| ApiError::Decode(e.to_string()))
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProviderStatus {
+    pub connected: Vec<String>,
 }

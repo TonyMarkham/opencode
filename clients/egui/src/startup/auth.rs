@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::env;
 use thiserror::Error;
 
+
 #[derive(Debug, Clone)]
 pub struct AuthSyncState {
     pub status: AuthSyncStatus,
@@ -99,8 +100,22 @@ pub async fn sync_api_keys_to_server(server_url: &str) -> AuthSyncState {
         }
     };
 
+    // Check if Anthropic already has OAuth tokens in server's auth.json
+    let skip_anthropic_oauth = if let Ok(Some(crate::auth::AuthInfo::OAuth { .. })) = 
+        crate::auth::AnthropicAuth::read_from_server() {
+        true
+    } else {
+        false
+    };
+
     // Sync each API key to the server
     for (provider, key) in api_keys {
+        // Skip Anthropic if it already has OAuth configured
+        if provider == "anthropic" && skip_anthropic_oauth {
+            eprintln!("ℹ️  Skipping Anthropic API key sync - OAuth tokens detected");
+            continue;
+        }
+        
         let url = format!("{server_url}/auth/{provider}");
         let body = serde_json::json!({
             "type": "api",
@@ -176,3 +191,4 @@ mod tests {
         assert_eq!(result, None);
     }
 }
+

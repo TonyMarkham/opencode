@@ -600,6 +600,12 @@ export namespace Provider {
           source: "api",
           key: provider.key,
         })
+      } else if (provider.type === "oauth") {
+        // OAuth: use access token as API key
+        mergeProvider(providerID, {
+          source: "api",
+          key: provider.access,
+        })
       }
     }
 

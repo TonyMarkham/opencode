@@ -37,9 +37,15 @@ pub struct OpenCodeApp {
 
     // API client
     client: Option<crate::client::api::OpencodeClient>,
+    oauth_token: Option<String>,
 
     // Auth sync state
     auth_sync_state: AuthSyncState,
+    connected_providers: Vec<String>,
+    
+    // OAuth toggle state
+    anthropic_subscription_mode: bool,
+    anthropic_oauth_expires: Option<u64>,
 
     // Audio task
     audio_tx: Option<mpsc::Sender<AudioCmd>>,
@@ -150,6 +156,8 @@ enum UiMsg {
     // Model discovery events
     ModelsDiscovered(Vec<crate::client::providers::DiscoveredModel>),
     ModelDiscoveryError(String),
+    // Provider status
+    ProviderStatus(Vec<String>),
     // Agent events
     AgentsLoaded(Vec<AgentInfo>),
     AgentsFailed(String),
@@ -208,6 +216,36 @@ impl OpenCodeApp {
         let models_config = crate::config::models::ModelsConfig::load();
         config.ui.apply_to_context(&cc.egui_ctx);
 
+        // Initialize OAuth toggle state by reading server's auth.json
+        let (oauth_token, anthropic_subscription_mode, anthropic_oauth_expires) = {
+            match crate::auth::AnthropicAuth::read_from_server() {
+                Ok(Some(crate::auth::AuthInfo::OAuth { access, refresh, expires })) => {
+                    // Cache OAuth tokens to .env next to executable
+                    let env_path = std::env::current_exe()
+                        .ok()
+                        .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                        .unwrap_or_else(|| std::env::current_dir().unwrap())
+                        .join(".env");
+                    
+                    let oauth_tokens = crate::auth::OAuthTokens {
+                        access: access.clone(),
+                        refresh,
+                        expires,
+                    };
+                    
+                    let _ = crate::auth::AnthropicAuth::cache_oauth_to_env(&oauth_tokens, &env_path);
+                    
+                    (Some(access), true, Some(expires))
+                }
+                Ok(Some(crate::auth::AuthInfo::ApiKey { .. })) => {
+                    (None, false, None)
+                }
+                _ => {
+                    (None, false, None)
+                }
+            }
+        };
+        
         Self {
             tabs: Vec::new(),
             active: 0,
@@ -219,7 +257,11 @@ impl OpenCodeApp {
             ui_rx: None,
             ui_tx: None,
             client: None,
+            oauth_token,
             auth_sync_state: AuthSyncState::default(),
+            connected_providers: Vec::new(),
+            anthropic_subscription_mode,
+            anthropic_oauth_expires,
             audio_tx: None,
             audio_enabled: false,
             recording_state: RecordingState::Idle,
@@ -325,9 +367,27 @@ impl OpenCodeApp {
                                         c.directory = Some(cwd);
                                     }
                                 }
+                                
+                                if let Some(token) = &self.oauth_token {
+                                    c.set_oauth_token(token.clone());
+                                }
+                                
                                 self.client = Some(c)
                             }
                             Err(e) => self.server_error = Some(e.to_string()),
+                        }
+
+                        // Fetch provider status to check for OAuth subscriptions
+                        if let (Some(client), Some(rt)) = (&self.client, &self.runtime) {
+                            let client_clone = client.clone();
+                            let tx = self.ui_tx.as_ref().unwrap().clone();
+                            let egui_ctx = ctx.clone();
+                            rt.spawn(async move {
+                                if let Ok(status) = client_clone.get_provider_status().await {
+                                    let _ = tx.send(UiMsg::ProviderStatus(status.connected));
+                                    egui_ctx.request_repaint();
+                                }
+                            });
                         }
 
                         if let Some(rt) = &self.runtime {
@@ -635,6 +695,9 @@ impl OpenCodeApp {
                     UiMsg::ModelDiscoveryError(error) => {
                         self.discovery_error = Some(error);
                         self.discovery_in_progress = false;
+                    }
+                    UiMsg::ProviderStatus(connected) => {
+                        self.connected_providers = connected;
                     }
                     UiMsg::AgentsLoaded(list) => {
                         self.agents = list;
@@ -1773,6 +1836,201 @@ impl OpenCodeApp {
             });
         }
     }
+    
+    fn toggle_anthropic_auth_mode(&mut self, enable_subscription: bool) {
+        if enable_subscription {
+            // Switch to subscription mode
+            if let Some(rt) = &self.runtime {
+                // Get server URL
+                let server_url = if let Some(server) = &self.server {
+                    server.base_url.clone()
+                } else {
+                    eprintln!("⚠️ No server connected");
+                    return;
+                };
+                
+                // Read OAuth tokens from .env cache
+                let env_path = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                    .unwrap_or_else(|| std::path::PathBuf::from("."))
+                    .join(".env");
+                
+                match crate::auth::AnthropicAuth::read_oauth_from_env(&env_path) {
+                    Ok(Some(oauth)) => {
+                        if crate::auth::AnthropicAuth::is_oauth_expired(oauth.expires) {
+                            eprintln!("⚠️ OAuth token expired. Run: opencode auth login");
+                            return;
+                        }
+                        
+                        let oauth_clone = oauth.clone();
+                        let rt_clone = rt.clone();
+                        let server_url_clone = server_url.clone();
+                        
+                        rt_clone.spawn(async move {
+                            eprintln!("🔧 Starting OAuth switch...");
+                            let client = reqwest::Client::new();
+                            
+                            // Send OAuth to server
+                            let url = format!("{}/auth/anthropic", server_url_clone);
+                            eprintln!("🔧 Sending PUT to {}", url);
+                            let result = client.put(&url)
+                                .json(&serde_json::json!({
+                                    "type": "oauth",
+                                    "access": oauth_clone.access,
+                                    "refresh": oauth_clone.refresh,
+                                    "expires": oauth_clone.expires
+                                }))
+                                .send()
+                                .await;
+                            
+                            match result {
+                                Ok(resp) => {
+                                    let status = resp.status();
+                                    eprintln!("🔧 Got response: {}", status);
+                                    if status.is_success() {
+                                        // Reload server state
+                                        let dispose_url = format!("{}/instance/dispose", server_url_clone);
+                                        eprintln!("🔧 Sending POST to {}", dispose_url);
+                                        let _ = client.post(&dispose_url)
+                                            .send()
+                                            .await;
+                                        println!("✓ Switched to Subscription mode");
+                                    } else {
+                                        let body = resp.text().await.unwrap_or_default();
+                                        eprintln!("❌ Failed to switch to subscription: {} - {}", status, body);
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("❌ HTTP request failed: {}", e);
+                                }
+                            }
+                        });
+                        
+                        self.anthropic_subscription_mode = true;
+                        self.anthropic_oauth_expires = Some(oauth.expires);
+                    }
+                    Ok(None) => {
+                        eprintln!("⚠️ No OAuth tokens cached. Run: opencode auth login, then click Refresh");
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Failed to read OAuth tokens: {}", e);
+                    }
+                }
+            }
+        } else {
+            // Switch to API key mode
+            if let Some(rt) = &self.runtime {
+                // Get server URL
+                let server_url = if let Some(server) = &self.server {
+                    server.base_url.clone()
+                } else {
+                    eprintln!("⚠️ No server connected");
+                    return;
+                };
+                
+                // Read API key from .env file next to executable
+                let env_path = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                    .unwrap_or_else(|| std::env::current_dir().unwrap())
+                    .join(".env");
+                
+                let api_key = if let Ok(content) = std::fs::read_to_string(&env_path) {
+                    content.lines()
+                        .find(|line| line.starts_with("ANTHROPIC_API_KEY="))
+                        .and_then(|line| line.strip_prefix("ANTHROPIC_API_KEY="))
+                        .map(|s| s.to_string())
+                } else {
+                    None
+                };
+                
+                if let Some(api_key) = api_key {
+                    let api_key_clone = api_key.clone();
+                    let rt_clone = rt.clone();
+                    let server_url_clone = server_url.clone();
+                    
+                    rt_clone.spawn(async move {
+                        eprintln!("🔧 Starting API key switch...");
+                        let client = reqwest::Client::new();
+                        
+                        // Send API key to server
+                        let url = format!("{}/auth/anthropic", server_url_clone);
+                        eprintln!("🔧 Sending PUT to {}", url);
+                        let result = client.put(&url)
+                            .json(&serde_json::json!({
+                                "type": "api",
+                                "key": api_key_clone
+                            }))
+                            .send()
+                            .await;
+                        
+                        match result {
+                            Ok(resp) => {
+                                let status = resp.status();
+                                eprintln!("🔧 Got response: {}", status);
+                                if status.is_success() {
+                                    // Reload server state
+                                    let dispose_url = format!("{}/instance/dispose", server_url_clone);
+                                    eprintln!("🔧 Sending POST to {}", dispose_url);
+                                    let _ = client.post(&dispose_url)
+                                        .send()
+                                        .await;
+                                    println!("✓ Switched to API Key mode");
+                                } else {
+                                    let body = resp.text().await.unwrap_or_default();
+                                    eprintln!("❌ Failed to switch to API key: {} - {}", status, body);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("❌ HTTP request failed: {}", e);
+                            }
+                        }
+                    });
+                    
+                    self.anthropic_subscription_mode = false;
+                    self.anthropic_oauth_expires = None;
+                } else {
+                    eprintln!("⚠️ No API key found in .env");
+                }
+            }
+        }
+    }
+    
+    fn refresh_oauth_tokens(&mut self) {
+        // Re-read server's auth.json and update cache
+        match crate::auth::AnthropicAuth::read_from_server() {
+            Ok(Some(crate::auth::AuthInfo::OAuth { access, refresh, expires })) => {
+                // Update .env cache next to executable
+                let env_path = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+                    .unwrap_or_else(|| std::env::current_dir().unwrap())
+                    .join(".env");
+                
+                let oauth_tokens = crate::auth::OAuthTokens { access, refresh, expires };
+                
+                match crate::auth::AnthropicAuth::cache_oauth_to_env(&oauth_tokens, &env_path) {
+                    Ok(_) => {
+                        self.anthropic_oauth_expires = Some(expires);
+                        println!("✓ OAuth tokens refreshed");
+                    }
+                    Err(e) => {
+                        eprintln!("❌ Failed to cache OAuth tokens: {}", e);
+                    }
+                }
+            }
+            Ok(Some(crate::auth::AuthInfo::ApiKey { .. })) => {
+                eprintln!("⚠️ Server is in API key mode, not OAuth. Run: opencode auth login");
+            }
+            Ok(None) => {
+                eprintln!("⚠️ No Anthropic auth found in server. Run: opencode auth login");
+            }
+            Err(e) => {
+                eprintln!("❌ Failed to read server auth: {}", e);
+            }
+        }
+    }
 }
 
 async fn try_discover_or_spawn() -> UiMsg {
@@ -1863,6 +2121,11 @@ impl eframe::App for OpenCodeApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Request repaint every second for OAuth countdown timer
+        if self.anthropic_subscription_mode && self.anthropic_oauth_expires.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        }
+        
         // Start server discovery on first frame (lazy init)
         if !self.discovery_started {
             self.start_server_discovery(ctx);
@@ -1878,6 +2141,14 @@ impl eframe::App for OpenCodeApp {
             && self.ui_tx.is_some()
         {
             let tab_idx = 0;
+            
+            // If OAuth is enabled, default to Claude Sonnet
+            let default_model = if self.oauth_token.is_some() {
+                 Some(("anthropic".to_string(), "claude-3-5-sonnet-latest".to_string()))
+            } else {
+                 None
+            };
+
             self.tabs.push(Tab {
                 title: "(creating…)".to_string(),
                 session_id: None,
@@ -1886,7 +2157,7 @@ impl eframe::App for OpenCodeApp {
                 messages: Vec::new(),
                 active_assistant: None,
                 input: String::new(),
-                selected_model: None,
+                selected_model: default_model,
                 selected_agent: Some(self.default_agent.clone()),
                 cancelled_messages: Vec::new(),
                 cancelled_calls: Vec::new(),
@@ -2675,34 +2946,83 @@ impl eframe::App for OpenCodeApp {
                 }
 
                 if let Some(tab) = self.tabs.get_mut(self.active) {
+                    // Deferred actions
+                    let mut toggle_to: Option<bool> = None;
+                    let mut do_refresh = false;
+                    
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 8.0;
 
-                        // Left side: model selector and active agent label
+                        // Left side: OAuth toggle, model selector and active agent label
                         ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            // OAuth Subscription Toggle (only for Anthropic)
+                            let mut subscription_checked = self.anthropic_subscription_mode;
+                            if ui.checkbox(&mut subscription_checked, "").changed() {
+                                toggle_to = Some(subscription_checked);
+                            }
+                            
+                            // Show countdown timer when in subscription mode
+                            if self.anthropic_subscription_mode {
+                                if let Some(expires) = self.anthropic_oauth_expires {
+                                    let time_str = crate::auth::AnthropicAuth::format_time_remaining(expires);
+                                    let color = if time_str.contains("Expired") {
+                                        egui::Color32::RED
+                                    } else if time_str.starts_with("0m") || time_str.starts_with("1m") || time_str.starts_with("2m") || time_str.starts_with("3m") || time_str.starts_with("4m") {
+                                        egui::Color32::YELLOW
+                                    } else {
+                                        egui::Color32::GREEN
+                                    };
+                                    ui.colored_label(color, format!("⏱ {}", time_str));
+                                } else {
+                                    ui.label("⏱ --");
+                                }
+                                
+                                // Refresh button
+                                if ui.small_button("🔄").on_hover_text("Refresh OAuth tokens from server").clicked() {
+                                    do_refresh = true;
+                                }
+                            } else {
+                                ui.label("API Key");
+                            }
+                            
+                            ui.separator();
+                            
                             if !self.models_config.get_curated_models().is_empty() {
                                 let current_display =
                                     if let Some((provider, model_id)) = &tab.selected_model {
-                                        self.models_config
+                                        // Check if this provider is using OAuth subscription
+                                        let is_oauth = self.connected_providers.contains(provider);
+                                        let base_display = self.models_config
                                             .get_curated_models()
                                             .iter()
                                             .find(|m| {
                                                 &m.provider == provider && &m.model_id == model_id
                                             })
                                             .map(|m| m.name.clone())
-                                            .unwrap_or_else(|| format!("{provider}/{model_id}"))
+                                            .unwrap_or_else(|| format!("{provider}/{model_id}"));
+                                        
+                                        if is_oauth && provider == "anthropic" {
+                                            format!("🟢 {} (Subscription)", base_display)
+                                        } else {
+                                            base_display
+                                        }
                                     } else {
-                                        match &self.auth_sync_state.status {
-                                            crate::startup::auth::AuthSyncStatus::InProgress => {
-                                                "\u{23F3}".to_string()
+                                        // No model selected, check if anthropic OAuth is available
+                                        if self.connected_providers.contains(&"anthropic".to_string()) {
+                                            "🟢 (Anthropic Subscription)".to_string()
+                                        } else {
+                                            match &self.auth_sync_state.status {
+                                                crate::startup::auth::AuthSyncStatus::InProgress => {
+                                                    "\u{23F3}".to_string()
+                                                }
+                                                crate::startup::auth::AuthSyncStatus::Complete => {
+                                                    "(default)".to_string()
+                                                }
+                                                crate::startup::auth::AuthSyncStatus::Failed(_) => {
+                                                    "\u{274C}".to_string()
+                                                }
+                                                _ => "...".to_string(),
                                             }
-                                            crate::startup::auth::AuthSyncStatus::Complete => {
-                                                "(default)".to_string()
-                                            }
-                                            crate::startup::auth::AuthSyncStatus::Failed(_) => {
-                                                "\u{274C}".to_string()
-                                            }
-                                            _ => "...".to_string(),
                                         }
                                     };
 
@@ -2792,6 +3112,14 @@ impl eframe::App for OpenCodeApp {
                             }
                         });
                     });
+                    
+                    // Execute deferred actions after UI is rendered
+                    if let Some(enabled) = toggle_to {
+                        self.toggle_anthropic_auth_mode(enabled);
+                    }
+                    if do_refresh {
+                        self.refresh_oauth_tokens();
+                    }
                 }
             });
 

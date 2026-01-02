@@ -1,0 +1,7 @@
+,
+  "anthropic": {
+    "type": "oauth",
+    "refresh": "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",
+    "access": "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",
+    "expires": 1767367963760
+  },

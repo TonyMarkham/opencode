@@ -6,13 +6,18 @@ use tokio::io::AsyncBufReadExt;
 use crate::discovery::process::{ServerInfo, check_health};
 use crate::error::spawn::SpawnError;
 
-/// Spawn `opencode serve --port 0 --hostname 127.0.0.1` and parse the printed URL line.
+/// Spawn `opencode serve --port {port} --hostname 127.0.0.1` and parse the printed URL line.
+/// If a port override is set, use that port; otherwise use port 0 (auto-select).
 /// Then poll GET {base_url}/doc until success or timeout.
 pub async fn spawn_and_wait() -> Result<ServerInfo, SpawnError> {
+    let port_arg = crate::discovery::get_override_port()
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "0".to_string());
+
     let cmd = tokio::process::Command::new("opencode")
         .arg("serve")
         .arg("--port")
-        .arg("0")
+        .arg(&port_arg)
         .arg("--hostname")
         .arg("127.0.0.1")
         .stdout(Stdio::piped())
@@ -35,7 +40,7 @@ pub async fn spawn_and_wait() -> Result<ServerInfo, SpawnError> {
             tokio::process::Command::new(path)
                 .arg("serve")
                 .arg("--port")
-                .arg("0")
+                .arg(&port_arg)
                 .arg("--hostname")
                 .arg("127.0.0.1")
                 .stdout(Stdio::piped())
