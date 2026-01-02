@@ -38,11 +38,11 @@ const URL_CAPTURE_PORT: &str = "port";
 
 static URL_REGEX: OnceLock<Regex> = OnceLock::new();
 
-fn get_url_regex() -> &'static Regex {
+pub(crate) fn get_url_regex() -> &'static Regex {
     URL_REGEX.get_or_init(|| Regex::new(SERVER_URL_PATTERN).expect("valid regex pattern"))
 }
 
-fn build_spawn_command(port: &str) -> TokioCommand {
+pub(crate) fn build_spawn_command(port: &str) -> TokioCommand {
     let mut cmd = TokioCommand::new(OPENCODE_BINARY);
     cmd.arg(SERVE_COMMAND)
         .arg(PORT_FLAG)

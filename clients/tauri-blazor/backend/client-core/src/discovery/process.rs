@@ -149,7 +149,7 @@ fn discover_by_process_scan() -> Result<Option<ServerInfo>, DiscoveryError> {
 }
 
 #[track_caller]
-fn with_process<F, R>(pid: u32, f: F) -> Option<R>
+pub(crate) fn with_process<F, R>(pid: u32, f: F) -> Option<R>
 where
     F: FnOnce(&Process) -> R,
 {
@@ -159,7 +159,7 @@ where
     sys.process(Pid::from_u32(pid)).map(f)
 }
 
-fn format_command(process: &Process) -> String {
+pub(crate) fn format_command(process: &Process) -> String {
     let cmd_vec: Vec<String> = process
         .cmd()
         .iter()
