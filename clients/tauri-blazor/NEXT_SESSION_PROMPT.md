@@ -17,7 +17,7 @@
 - `backend/client-core` compiles and passes `cargo clippy -p client-core -- -D warnings` ✅
 - All discovery and spawn logic is production-ready
 - Workspace structure is set up correctly
-- **BUT:** No Tauri backend yet - we need to scaffold `src-tauri/` and wire up commands
+- **BUT:** No Tauri backend yet - we need to scaffold `apps/desktop/opencode/` and wire up commands
 
 ---
 
@@ -27,20 +27,20 @@ Build the Tauri backend that exposes `client-core` functionality via Tauri comma
 
 ### Step 1: Scaffold Tauri Project
 
-**Goal:** Create the `src-tauri/` directory with proper Tauri configuration
+**Goal:** Create the `apps/desktop/opencode/` directory with proper Tauri configuration
 
 **Tasks:**
 
-1. Initialize Tauri 2 project in `clients/tauri-blazor/src-tauri/`
+1. Initialize Tauri 2 project in `clients/tauri-blazor/apps/desktop/opencode/`
    - Use Tauri CLI: `cargo tauri init` (or manually create structure)
    - Target Tauri 2.9.5+ (match Cognexus proven version)
    - Configure for Blazor frontend (HTML/WASM loading)
 
-2. Create `src-tauri/Cargo.toml` with dependencies:
+2. Create `apps/desktop/opencode/Cargo.toml` with dependencies:
 
    ```toml
    [package]
-   name = "opencode-blazor"
+   name = "opencode"
    version = "0.1.0"
    edition = "2021"
 
@@ -52,21 +52,21 @@ Build the Tauri backend that exposes `client-core` functionality via Tauri comma
    reqwest = { version = "0.12", features = ["json"] }
 
    # Workspace dependencies
-   client-core = { path = "../backend/client-core" }
-   common = { path = "../common" }
+   client-core = { path = "../../../backend/client-core" }
+   common = { path = "../../../common" }
 
    [build-dependencies]
    tauri-build = { version = "2" }
    ```
 
-3. Create `src-tauri/tauri.conf.json` with proper configuration:
+3. Create `apps/desktop/opencode/tauri.conf.json` with proper configuration:
    - Set app name, identifier (e.g., `com.opencode.blazor`)
    - Configure window properties (min size, title, etc.)
    - Set up frontend dev server URL and build path
    - Configure bundle/build settings
    - **Important:** Enable `protocol-asset` for loading Blazor WASM
 
-4. Create `src-tauri/build.rs` with Tauri build script:
+4. Create `apps/desktop/opencode/build.rs` with Tauri build script:
 
    ```rust
    fn main() {
@@ -74,7 +74,9 @@ Build the Tauri backend that exposes `client-core` functionality via Tauri comma
    }
    ```
 
-5. Verify scaffold compiles: `cargo build -p opencode-blazor`
+5. Update workspace `Cargo.toml` to add new member: `"apps/desktop/opencode"`
+
+6. Verify scaffold compiles: `cargo build -p opencode`
 
 **Technical Details:**
 
@@ -91,7 +93,7 @@ Build the Tauri backend that exposes `client-core` functionality via Tauri comma
 
 **Tasks:**
 
-1. Create `src-tauri/src/state.rs`:
+1. Create `apps/desktop/opencode/src/state.rs`:
 
    ```rust
    use std::sync::{Arc, Mutex};
@@ -111,7 +113,7 @@ Build the Tauri backend that exposes `client-core` functionality via Tauri comma
    }
    ```
 
-2. Update `src-tauri/src/main.rs` to initialize state:
+2. Update `apps/desktop/opencode/src/main.rs` to initialize state:
 
    ```rust
    #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -140,13 +142,13 @@ Build the Tauri backend that exposes `client-core` functionality via Tauri comma
 
 **Tasks:**
 
-1. Create `src-tauri/src/commands/mod.rs`:
+1. Create `apps/desktop/opencode/src/commands/mod.rs`:
 
    ```rust
    pub mod server;
    ```
 
-2. Create `src-tauri/src/commands/server.rs`:
+2. Create `apps/desktop/opencode/src/commands/server.rs`:
 
    ```rust
    use tauri::State;
@@ -247,7 +249,7 @@ pub async fn example_command(
 
 **Tasks:**
 
-1. Create `src-tauri/frontend/index.html`:
+1. Create `apps/desktop/opencode/frontend/index.html`:
 
    ```html
    <!DOCTYPE html>
@@ -289,7 +291,7 @@ pub async fn example_command(
 3. Test the commands:
 
    ```bash
-   cd clients/tauri-blazor/src-tauri
+   cd clients/tauri-blazor/apps/desktop/opencode
    cargo tauri dev
    ```
 
@@ -315,9 +317,10 @@ pub async fn example_command(
 
 ## Success Criteria for Session 2
 
-- [ ] `src-tauri/` directory created with proper Tauri 2 structure
-- [ ] `cargo build -p opencode-blazor` succeeds
-- [ ] `cargo clippy -p opencode-blazor -- -D warnings` passes
+- [ ] `apps/desktop/opencode/` directory created with proper Tauri 2 structure
+- [ ] Workspace Cargo.toml updated with new member
+- [ ] `cargo build -p opencode` succeeds
+- [ ] `cargo clippy -p opencode -- -D warnings` passes
 - [ ] Tauri app launches with test HTML frontend
 - [ ] `discover_server` command works from browser console
 - [ ] `spawn_server` command spawns server and returns info
@@ -342,14 +345,14 @@ pub async fn example_command(
 
 **To Create:**
 
-- `clients/tauri-blazor/src-tauri/Cargo.toml` - Tauri package
-- `clients/tauri-blazor/src-tauri/tauri.conf.json` - Tauri config
-- `clients/tauri-blazor/src-tauri/build.rs` - Build script
-- `clients/tauri-blazor/src-tauri/src/main.rs` - Entry point
-- `clients/tauri-blazor/src-tauri/src/state.rs` - State management
-- `clients/tauri-blazor/src-tauri/src/commands/mod.rs` - Commands module
-- `clients/tauri-blazor/src-tauri/src/commands/server.rs` - Server commands
-- `clients/tauri-blazor/src-tauri/frontend/index.html` - Test HTML
+- `clients/tauri-blazor/apps/desktop/opencode/Cargo.toml` - Tauri package
+- `clients/tauri-blazor/apps/desktop/opencode/tauri.conf.json` - Tauri config
+- `clients/tauri-blazor/apps/desktop/opencode/build.rs` - Build script
+- `clients/tauri-blazor/apps/desktop/opencode/src/main.rs` - Entry point
+- `clients/tauri-blazor/apps/desktop/opencode/src/state.rs` - State management
+- `clients/tauri-blazor/apps/desktop/opencode/src/commands/mod.rs` - Commands module
+- `clients/tauri-blazor/apps/desktop/opencode/src/commands/server.rs` - Server commands
+- `clients/tauri-blazor/apps/desktop/opencode/frontend/index.html` - Test HTML
 
 **Reference (for Tauri patterns):**
 

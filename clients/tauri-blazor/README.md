@@ -22,14 +22,28 @@ clients/tauri-blazor/                        # Feature root (self-contained)
 │       ├── src/
 │       │   ├── lib.rs                       # Public API exports
 │       │   ├── discovery/
-│       │   │   ├── mod.rs                   # Port override logic
+│       │   │   ├── mod.rs                   # Discovery module
 │       │   │   ├── process.rs               # ServerInfo, discover(), stop_pid(), check_health()
 │       │   │   └── spawn.rs                 # spawn_and_wait()
+│       │   ├── error/
+│       │   │   ├── mod.rs                   # Error module
+│       │   │   ├── discovery.rs             # DiscoveryError enum
+│       │   │   └── spawn.rs                 # SpawnError enum
+│       │   └── tests/                       # Unit tests (mirror src/ structure)
+│       ├── integration_tests/               # Integration tests
+│       │   ├── mod.rs
+│       │   ├── discovery/
 │       │   └── error/
-│       │       ├── mod.rs
-│       │       ├── discovery.rs             # DiscoveryError enum
-│       │       └── spawn.rs                 # SpawnError enum
-│       └── Cargo.toml                       # Shared crate manifest
+│       └── Cargo.toml                       # client-core crate manifest
+├── common/                                  # Shared utilities across crates
+│   ├── src/
+│   │   ├── lib.rs                           # Public API exports
+│   │   ├── error/
+│   │   │   ├── mod.rs                       # Error utilities module
+│   │   │   └── error_location.rs            # ErrorLocation trait
+│   │   └── tests/                           # Unit tests
+│   │       └── error_location.rs
+│   └── Cargo.toml                           # common crate manifest
 ├── frontend/                                # Blazor source code
 │   └── opencode/                            # Blazor project
 │       ├── Pages/                           # Blazor pages/components
@@ -37,14 +51,18 @@ clients/tauri-blazor/                        # Feature root (self-contained)
 │       ├── Services/                        # C# services for Tauri interop
 │       ├── wwwroot/                         # Static assets
 │       └── OpenCode.csproj                  # Blazor project file
-├── Cargo.toml                               # Workspace root for this feature
+├── Cargo.toml                               # Workspace root manifest
 └── README.md                                # This file
 ```
 
 ## Architecture
 
 - **Tauri Backend** (`apps/desktop/opencode/src/`): Rust code handling system integration, server discovery, and command execution
-- **Shared Core** (`backend/client-core/`): Reusable Rust logic shared between egui and Tauri clients
+- **Shared Core** (`backend/client-core/`): Reusable Rust logic for server discovery, spawning, and health checks
+  - Unit tests in `src/tests/` (mirror source structure)
+  - Integration tests in `integration_tests/` (configured via `[[test]]` in Cargo.toml)
+- **Common Utilities** (`common/`): Shared utilities like ErrorLocation trait used across all crates
+  - Unit tests in `src/tests/`
 - **Blazor Frontend** (`frontend/opencode/`): C# Blazor WebAssembly UI compiled to the `apps/desktop/opencode/frontend/` directory
 
 ## Development

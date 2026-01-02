@@ -21,7 +21,7 @@ Build a new Tauri + Blazor WebAssembly desktop client as an alternative to egui,
 - ✅ Create `clients/tauri-blazor/` workspace layout
 - ✅ Create workspace Cargo.toml with proper dependencies
 - ✅ Create README.md documenting structure
-- ⏭️ Set up Tauri project skeleton (`src-tauri/`) (DEFERRED to Session 2)
+- ⏭️ Set up Tauri project skeleton (`apps/desktop/opencode/`) (DEFERRED to Session 2)
 
 **Status:** ✅ Complete
 
@@ -40,12 +40,12 @@ Build a new Tauri + Blazor WebAssembly desktop client as an alternative to egui,
 
 ### Step 1: Implement Tauri State Management
 
-- Create `src-tauri/src/state.rs` for shared app state
+- Create `apps/desktop/opencode/src/state.rs` for shared app state
 - Set up state initialization in main.rs
 
 ### Step 2: Implement Server Discovery Commands
 
-- Create `src-tauri/src/commands/server.rs`
+- Create `apps/desktop/opencode/src/commands/server.rs`
 - Implement `discover_server()`, `spawn_server()`, `check_health()`, `stop_server()`
 - Wire commands into Tauri builder
 
@@ -74,7 +74,7 @@ Build a new Tauri + Blazor WebAssembly desktop client as an alternative to egui,
 - Create `frontend/` directory with .NET project
 - Configure OpenCodeBlazor.csproj (Radzen, Markdig packages)
 - Set up Program.cs with dependency injection
-- Configure publish to `src-tauri/frontend/`
+- Configure publish to `apps/desktop/opencode/frontend/`
 
 ### Step 2: Create Server Service Layer
 
@@ -295,7 +295,7 @@ Build a new Tauri + Blazor WebAssembly desktop client as an alternative to egui,
 
 **Deferred to Session 2:**
 
-- Tauri scaffold (`src-tauri/`)
+- Tauri scaffold (`apps/desktop/opencode/`)
 - No changes to egui client (remains independent)
 
 **Next Steps:**
