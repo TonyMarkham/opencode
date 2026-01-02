@@ -1,183 +1,330 @@
-# Next Session: Shared Rust Core & Project Scaffold
+# Next Session: Tauri Backend & Server Commands
 
 ## Quick Context
 
-**What We Completed (Session 0 - 2026-01-02):**
+**What We Completed (Session 1 - 2026-01-02):**
 
-- ✅ Analyzed ADR-0001 scope and requirements
-- ✅ Created comprehensive 6-session implementation plan
-- ✅ Identified natural session boundaries and dependencies
-- ✅ Documented project structure in `clients/tauri-blazor/README.md`
+- ✅ Created workspace at `clients/tauri-blazor/` with proper Cargo.toml
+- ✅ Built production-grade `backend/client-core/` crate with discovery + spawn logic
+- ✅ Built `common/` crate for shared ErrorLocation utilities
+- ✅ Implemented complete error handling (CoreError, DiscoveryError, SpawnError)
+- ✅ Implemented discovery module (discover, stop_pid, check_health)
+- ✅ Implemented spawn module (spawn_and_wait with exponential backoff)
+- ✅ Zero magic numbers, DRY helpers, full rustdoc, clippy clean
 
 **Current State:**
 
-- ADR-0001 is approved (status: Proposed)
-- egui client exists with server discovery logic in `clients/egui/src/discovery/`
-- No shared Rust crate exists yet
-- `clients/tauri-blazor/` directory created with README.md documenting structure
-- **BUT:** We need to extract shared code and create project structure
-
-**CRITICAL: Read `clients/tauri-blazor/README.md` FIRST to understand the Cognexus-inspired project structure before starting implementation.**
+- `backend/client-core` compiles and passes `cargo clippy -p client-core -- -D warnings` ✅
+- All discovery and spawn logic is production-ready
+- Workspace structure is set up correctly
+- **BUT:** No Tauri backend yet - we need to scaffold `src-tauri/` and wire up commands
 
 ---
 
-## Your Mission: Session 1
+## Your Mission: Session 2 - Tauri Backend Scaffold
 
-**Create the foundation:** Extract shared Rust client code and scaffold the Tauri-Blazor project structure.
+Build the Tauri backend that exposes `client-core` functionality via Tauri commands, following the zero-custom-JavaScript policy.
 
-### Step 1: Create Shared Client Core Crate
+### Step 1: Scaffold Tauri Project
 
-**Goal:** Extract server discovery and API client logic into a reusable workspace crate
+**Goal:** Create the `src-tauri/` directory with proper Tauri configuration
 
 **Tasks:**
 
-1. Create `crates/opencode-client-core/` directory structure
-2. Create `Cargo.toml` with proper workspace configuration
-3. Create `src/lib.rs` with module exports
-4. Create `src/discovery/` module structure (mod.rs, process.rs, spawn.rs)
-5. Copy server discovery code from `clients/egui/src/discovery/` to shared crate
-6. Extract common types and utilities needed by both clients
-7. Update `clients/egui/Cargo.toml` to depend on shared crate
-8. Update `clients/egui/src/main.rs` and related files to use shared crate
-9. Test that egui client still builds and runs correctly
+1. Initialize Tauri 2 project in `clients/tauri-blazor/src-tauri/`
+   - Use Tauri CLI: `cargo tauri init` (or manually create structure)
+   - Target Tauri 2.9.5+ (match Cognexus proven version)
+   - Configure for Blazor frontend (HTML/WASM loading)
+
+2. Create `src-tauri/Cargo.toml` with dependencies:
+
+   ```toml
+   [package]
+   name = "opencode-blazor"
+   version = "0.1.0"
+   edition = "2021"
+
+   [dependencies]
+   tauri = { version = "2", features = ["protocol-asset"] }
+   tokio = { version = "1", features = ["full"] }
+   serde = { version = "1", features = ["derive"] }
+   serde_json = "1"
+   reqwest = { version = "0.12", features = ["json"] }
+
+   # Workspace dependencies
+   client-core = { path = "../backend/client-core" }
+   common = { path = "../common" }
+
+   [build-dependencies]
+   tauri-build = { version = "2" }
+   ```
+
+3. Create `src-tauri/tauri.conf.json` with proper configuration:
+   - Set app name, identifier (e.g., `com.opencode.blazor`)
+   - Configure window properties (min size, title, etc.)
+   - Set up frontend dev server URL and build path
+   - Configure bundle/build settings
+   - **Important:** Enable `protocol-asset` for loading Blazor WASM
+
+4. Create `src-tauri/build.rs` with Tauri build script:
+
+   ```rust
+   fn main() {
+       tauri_build::build()
+   }
+   ```
+
+5. Verify scaffold compiles: `cargo build -p opencode-blazor`
 
 **Technical Details:**
 
-**Crate structure:**
-
-```
-crates/opencode-client-core/
-├── Cargo.toml
-└── src/
-    ├── lib.rs
-    ├── discovery/
-    │   ├── mod.rs
-    │   ├── process.rs   # Port scanning, process detection
-    │   └── spawn.rs     # Server spawning logic
-    ├── types/
-    │   ├── mod.rs
-    │   └── server.rs    # ServerInfo struct
-    └── error/
-        ├── mod.rs
-        └── discovery.rs # Error types
-```
-
-**Dependencies to include:**
-
-- tokio (rt-multi-thread, macros, process)
-- serde (with derive)
-- serde_json
-- reqwest (json, rustls-tls)
-- sysinfo
-- netstat2
-- thiserror
-
-**Key patterns:**
-
-- Use `#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]` on ServerInfo
-- Export public API from `lib.rs`: `pub mod discovery; pub mod types; pub mod error;`
-- Keep the same function signatures as egui currently uses
+- Follow Tauri 2.x conventions (NOT Tauri 1.x)
+- Use `protocol-asset` for serving Blazor static files
+- Configure CSP (Content Security Policy) to allow WASM execution
+- Set minimum window size appropriate for chat UI (e.g., 800×600)
 
 ---
 
-### Step 2: Create Tauri-Blazor Project Scaffold
+### Step 2: Implement Tauri State Management
 
-**Goal:** Set up directory structure and minimal Tauri configuration
+**Goal:** Create shared application state for managing server connection
 
 **Tasks:**
 
-1. Create `clients/tauri-blazor/` directory
-2. Create `clients/tauri-blazor/src-tauri/` directory structure
-3. Create `clients/tauri-blazor/src-tauri/Cargo.toml` with Tauri dependencies
-4. Create `clients/tauri-blazor/src-tauri/build.rs` for Tauri build script
-5. Create `clients/tauri-blazor/src-tauri/tauri.conf.json` configuration
-6. Create `clients/tauri-blazor/src-tauri/src/main.rs` with minimal Tauri app
-7. Create `clients/tauri-blazor/src-tauri/src/commands/mod.rs` module structure
-8. Create `clients/tauri-blazor/src-tauri/src/state.rs` for app state
-9. Create `clients/tauri-blazor/README.md` with setup instructions
-10. Create `.gitignore` for Tauri and Blazor artifacts
+1. Create `src-tauri/src/state.rs`:
+
+   ```rust
+   use std::sync::{Arc, Mutex};
+
+   /// Application state shared across all Tauri commands
+   #[derive(Debug, Default)]
+   pub struct AppState {
+       /// Currently connected server info (if any)
+       pub server: Arc<Mutex<Option<ServerInfo>>>,
+   }
+
+   #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+   pub struct ServerInfo {
+       pub pid: u32,
+       pub host: String,
+       pub port: u16,
+   }
+   ```
+
+2. Update `src-tauri/src/main.rs` to initialize state:
+
+   ```rust
+   #[cfg_attr(mobile, tauri::mobile_entry_point)]
+   pub fn run() {
+       tauri::Builder::default()
+           .manage(AppState::default())
+           .invoke_handler(tauri::generate_handler![/* commands here */])
+           .run(tauri::generate_context!())
+           .expect("error while running tauri application");
+   }
+   ```
+
+3. Verify state is accessible in commands (we'll test in Step 3)
 
 **Technical Details:**
 
-**Tauri Configuration (`tauri.conf.json`):**
+- Use `Arc<Mutex<T>>` for thread-safe state (Tauri commands run on threadpool)
+- `ServerInfo` must derive `Serialize/Deserialize` for Tauri IPC
+- State is managed by Tauri's DI system via `.manage()`
 
-```json
-{
-  "$schema": "https://schema.tauri.app/config/2",
-  "productName": "OpenCode",
-  "version": "0.0.1",
-  "identifier": "com.opencode.tauri-blazor",
-  "build": {
-    "frontendDist": "./frontend/wwwroot"
-  },
-  "app": {
-    "withGlobalTauri": true,
-    "windows": [
-      {
-        "title": "OpenCode",
-        "width": 1200,
-        "height": 800
-      }
-    ]
-  }
-}
-```
+---
 
-**Minimal main.rs:**
+### Step 3: Implement Server Discovery Commands
+
+**Goal:** Wire up `client-core` discovery logic to Tauri commands
+
+**Tasks:**
+
+1. Create `src-tauri/src/commands/mod.rs`:
+
+   ```rust
+   pub mod server;
+   ```
+
+2. Create `src-tauri/src/commands/server.rs`:
+
+   ```rust
+   use tauri::State;
+   use crate::state::{AppState, ServerInfo};
+   use client_core::discovery;
+
+   /// Discovers a running OpenCode server on localhost
+   #[tauri::command]
+   pub async fn discover_server(
+       state: State<'_, AppState>,
+   ) -> Result<Option<ServerInfo>, String> {
+       // Call client_core::discovery::discover()
+       // Parse result and update state
+       // Return ServerInfo or None
+   }
+
+   /// Spawns a new OpenCode server and waits for health check
+   #[tauri::command]
+   pub async fn spawn_server(
+       state: State<'_, AppState>,
+   ) -> Result<ServerInfo, String> {
+       // Call client_core::spawn::spawn_and_wait()
+       // Update state with new server info
+       // Return ServerInfo
+   }
+
+   /// Checks if the server is healthy
+   #[tauri::command]
+   pub async fn check_health(
+       state: State<'_, AppState>,
+   ) -> Result<bool, String> {
+       // Get server info from state
+       // Call client_core::discovery::check_health()
+       // Return true/false
+   }
+
+   /// Stops the currently connected server
+   #[tauri::command]
+   pub async fn stop_server(
+       state: State<'_, AppState>,
+   ) -> Result<(), String> {
+       // Get server PID from state
+       // Call client_core::discovery::stop_pid()
+       // Clear state
+   }
+   ```
+
+3. Wire commands into `main.rs`:
+
+   ```rust
+   use commands::server::{discover_server, spawn_server, check_health, stop_server};
+
+   .invoke_handler(tauri::generate_handler![
+       discover_server,
+       spawn_server,
+       check_health,
+       stop_server,
+   ])
+   ```
+
+4. Implement proper error conversion:
+   - Convert `client_core::error::CoreError` to `String` for Tauri IPC
+   - Include error location information in error messages
+   - Log errors with context
+
+**Technical Details:**
+
+- All Tauri commands must be `async` and return `Result<T, String>`
+- Use `State<'_, AppState>` to access shared state
+- Error strings should be informative (include error location)
+- Commands run on Tokio threadpool (safe to call async functions)
+
+**Pattern to follow:**
 
 ```rust
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
-mod commands;
-mod state;
-
-use tauri::Manager;
-use state::AppState;
-
-fn main() {
-    tauri::Builder::default()
-        .setup(|app| {
-            let state = AppState::new();
-            app.manage(state);
-            Ok(())
-        })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+#[tauri::command]
+pub async fn example_command(
+    state: State<'_, AppState>,
+) -> Result<ReturnType, String> {
+    match client_core::some_function() {
+        Ok(result) => {
+            // Update state if needed
+            Ok(result)
+        }
+        Err(e) => {
+            // Convert error with location
+            Err(format!("Failed to do thing: {}", e))
+        }
+    }
 }
 ```
 
-**Dependencies in Cargo.toml:**
-
-- tauri (version 2, features: devtools, macos-private-api)
-- serde (with derive)
-- tokio (full features)
-- opencode-client-core (workspace path)
-
 ---
 
-### Step 3: Verify Everything Works
+### Step 4: Create Minimal HTML Test Frontend
 
-**Goal:** Ensure both egui and tauri scaffold build successfully
+**Goal:** Test Tauri commands from browser console before building Blazor UI
 
 **Tasks:**
 
-1. Build egui client: `cd clients/egui && cargo build`
-2. Run egui client: `cd clients/egui && cargo run`
-3. Test server discovery still works in egui
-4. Build Tauri project: `cd clients/tauri-blazor/src-tauri && cargo build`
-5. Fix any compilation errors
-6. Document any issues or decisions made
+1. Create `src-tauri/frontend/index.html`:
+
+   ```html
+   <!DOCTYPE html>
+   <html>
+     <head>
+       <meta charset="UTF-8" />
+       <title>OpenCode Blazor (Test)</title>
+     </head>
+     <body>
+       <h1>OpenCode Tauri Backend Test</h1>
+       <p>Open browser console and test commands:</p>
+       <pre>
+   // Discover server
+   await window.__TAURI__.invoke('discover_server')
+   
+   // Spawn server
+   await window.__TAURI__.invoke('spawn_server')
+   
+   // Check health
+   await window.__TAURI__.invoke('check_health')
+   
+   // Stop server
+   await window.__TAURI__.invoke('stop_server')
+       </pre>
+     </body>
+   </html>
+   ```
+
+2. Update `tauri.conf.json` to point to this HTML:
+
+   ```json
+   {
+     "build": {
+       "frontendDist": "./frontend"
+     }
+   }
+   ```
+
+3. Test the commands:
+
+   ```bash
+   cd clients/tauri-blazor/src-tauri
+   cargo tauri dev
+   ```
+
+   - Open browser console in Tauri window
+   - Run `await window.__TAURI__.invoke('discover_server')`
+   - Verify it returns server info or null
+   - Test spawn, health check, and stop commands
+
+4. Verify full flow:
+   - Spawn server → returns PID, host, port
+   - Check health → returns true
+   - Stop server → succeeds
+   - Check health → returns false or error
+
+**Technical Details:**
+
+- This is a TEMPORARY test frontend (will be replaced with Blazor in Session 3)
+- `window.__TAURI__.invoke()` is the Tauri IPC mechanism
+- Commands return Promises that resolve/reject based on Rust Result
+- All testing from browser console (no custom JS files needed)
 
 ---
 
-## Success Criteria for Session 1
+## Success Criteria for Session 2
 
-- [ ] `crates/opencode-client-core` exists and compiles
-- [ ] egui client builds and runs with shared crate (no regression)
-- [ ] Server discovery still works in egui client
-- [ ] `clients/tauri-blazor/src-tauri` compiles successfully
-- [ ] No custom JavaScript files created (should be NONE at this stage)
-- [ ] All code follows OpenCode style guide (no unnecessary destructuring, prefer single-word vars)
+- [ ] `src-tauri/` directory created with proper Tauri 2 structure
+- [ ] `cargo build -p opencode-blazor` succeeds
+- [ ] `cargo clippy -p opencode-blazor -- -D warnings` passes
+- [ ] Tauri app launches with test HTML frontend
+- [ ] `discover_server` command works from browser console
+- [ ] `spawn_server` command spawns server and returns info
+- [ ] `check_health` command returns correct health status
+- [ ] `stop_server` command stops server gracefully
+- [ ] State management works (server info persists between commands)
+- [ ] Error messages include location information from ErrorLocation
 
 ---
 
@@ -185,96 +332,67 @@ fn main() {
 
 **Existing (Read these first):**
 
-- `clients/egui/src/discovery/mod.rs` - Server discovery entry point
-- `clients/egui/src/discovery/process.rs` - Port scanning, process detection
-- `clients/egui/src/discovery/spawn.rs` - Server spawning logic
-- `clients/egui/Cargo.toml` - Dependencies to copy
-- `clients/egui/src/error/discovery.rs` - Error types to extract
+- `clients/tauri-blazor/backend/client-core/src/lib.rs` - Public API to wire up
+- `clients/tauri-blazor/backend/client-core/src/discovery/mod.rs` - Discovery functions
+- `clients/tauri-blazor/backend/client-core/src/spawn/mod.rs` - Spawn functions
+- `clients/tauri-blazor/backend/client-core/src/error.rs` - Error types to convert
+- `clients/tauri-blazor/common/src/lib.rs` - ErrorLocation trait
+- `clients/tauri-blazor/Cargo.toml` - Workspace structure
+- `clients/tauri-blazor/README.md` - Project structure
 
 **To Create:**
 
-- `crates/opencode-client-core/Cargo.toml` - Shared crate manifest
-- `crates/opencode-client-core/src/lib.rs` - Public API exports
-- `crates/opencode-client-core/src/discovery/mod.rs` - Discovery module
-- `clients/tauri-blazor/src-tauri/Cargo.toml` - Tauri manifest
-- `clients/tauri-blazor/src-tauri/src/main.rs` - Tauri entry point
+- `clients/tauri-blazor/src-tauri/Cargo.toml` - Tauri package
 - `clients/tauri-blazor/src-tauri/tauri.conf.json` - Tauri config
-- `clients/tauri-blazor/README.md` - Setup instructions
+- `clients/tauri-blazor/src-tauri/build.rs` - Build script
+- `clients/tauri-blazor/src-tauri/src/main.rs` - Entry point
+- `clients/tauri-blazor/src-tauri/src/state.rs` - State management
+- `clients/tauri-blazor/src-tauri/src/commands/mod.rs` - Commands module
+- `clients/tauri-blazor/src-tauri/src/commands/server.rs` - Server commands
+- `clients/tauri-blazor/src-tauri/frontend/index.html` - Test HTML
+
+**Reference (for Tauri patterns):**
+
+- Look at other Tauri projects in repo if any exist
+- Tauri 2 docs for command patterns
+- Cognexus example (same Tauri version)
 
 ---
 
 ## Important Reminders
 
-1. **Production-grade only** - No placeholders, no TODOs without implementation path
-2. **Read existing patterns first** - Study egui code before extracting
-3. **Test egui after changes** - Don't break the working client
-4. **No custom JavaScript** - This session shouldn't need any, but critical for later
-5. **Follow style guide** - Avoid `else`, avoid `try/catch`, prefer single-word vars
-6. **Edition 2024** - Use latest Rust edition (matching egui)
+1. **Production-grade only** - Match the quality of `client-core`
+2. **Tauri 2.x** - NOT Tauri 1.x (different API)
+3. **Zero custom JavaScript** - Test HTML only uses `window.__TAURI__.invoke()`
+4. **Error handling** - Convert CoreError properly, include location info
+5. **State management** - Use Arc<Mutex<T>> for thread safety
+6. **Clippy clean** - Must pass `-D warnings`
+7. **Full rustdoc** - Document all public APIs
+8. **Test as you go** - Verify each command works before moving on
 
 ---
 
-## Workspace Integration
+## Technical Constraints
 
-**Update root `Cargo.toml` workspace members:**
-
-```toml
-[workspace]
-members = [
-    "crates/opencode-client-core",
-    "clients/egui",
-    # ... other members
-]
-```
-
-**Use workspace dependencies pattern:**
-
-```toml
-# In opencode-client-core/Cargo.toml
-[dependencies]
-tokio = { version = "1.43", features = ["rt-multi-thread", "macros", "process"] }
-
-# In clients/egui/Cargo.toml
-[dependencies]
-opencode-client-core = { path = "../../crates/opencode-client-core" }
-```
+- **Tauri Version:** 2.9.5+ (match Cognexus)
+- **.NET Target (future):** 9.0+ for Blazor WASM
+- **Zero Custom JavaScript:** All IPC via C# IJSRuntime only (Blazor in Session 3)
+- **Protocol:** Use `protocol-asset` for serving static files
+- **Window:** Minimum 800×600, resizable, proper title
 
 ---
 
-## Expected Challenges
+## Estimated Token Budget
 
-1. **Module visibility:** Ensure functions are `pub` in shared crate
-2. **Error type unification:** May need to create common error enum
-3. **Async runtime:** Ensure tokio runtime is properly shared
-4. **Path dependencies:** Relative paths need to be correct from both clients
-5. **Feature flags:** May need to make some features optional
+**~100K tokens:**
 
----
-
-## What NOT to Do
-
-- ❌ Don't create Blazor project yet (that's Session 3)
-- ❌ Don't implement Tauri commands yet (that's Session 2)
-- ❌ Don't create any `.js` files
-- ❌ Don't modify server code (only client-side)
-- ❌ Don't change egui's behavior (only its dependencies)
+- Reading context: ~15K tokens (existing code + docs)
+- Tauri scaffold: ~20K tokens
+- State management: ~10K tokens
+- Command implementation: ~30K tokens
+- Testing/verification: ~15K tokens
+- Documentation: ~10K tokens
 
 ---
 
-## Definition of Done
-
-When you can run:
-
-1. `cd clients/egui && cargo run` → egui client launches and discovers server
-2. `cd clients/tauri-blazor/src-tauri && cargo build` → Tauri backend compiles
-3. `cargo test -p opencode-client-core` → Shared crate tests pass (if any added)
-
----
-
-**Start with:** "I'll extract the server discovery code from egui into a shared crate, then create the Tauri project scaffold."
-
----
-
-**Estimated Time:** 4-6 hours  
-**Token Budget:** ~80K tokens  
-**Next Session:** Session 2 - Tauri Backend & Server Commands
+**Start with:** "Let me read the existing client-core API to understand what we're wiring up, then scaffold the Tauri project structure."

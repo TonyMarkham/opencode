@@ -1,0 +1,20 @@
+[package]
+name = "client-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+serde = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+sysinfo = { workspace = true }
+netstat2 = { workspace = true }
+thiserror = { workspace = true }
+regex = { workspace = true }
+log = { workspace = true }
+fern = { workspace = true }
+backoff = { workspace = true }
+const_format = { workspace = true }
+
+common = { workspace = true }

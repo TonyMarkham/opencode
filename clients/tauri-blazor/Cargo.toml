@@ -1,0 +1,24 @@
+[workspace]
+members = [
+    "common",
+    "backend/client-core",
+]
+
+resolver = "2"
+
+[workspace.dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros", "process"] }
+serde_json = { version = "1.0.148" }
+reqwest = { version = "0.13.1", features = ["json", "rustls"] }
+sysinfo = { version = "0.37.2" }
+netstat2 = { version = "0.11.2" }
+thiserror = { version = "2.0.17" }
+regex = { version = "1.12.2"}
+log = { version = "0.4.29" }
+fern = { version = "0.7.1" }
+backoff = { version = "0.4.0" }
+const_format = { version = "0.2.35" }
+
+common = { path = "common" }
+
