@@ -64,6 +64,10 @@ pub struct OpenCodeApp {
     base_url_input: String,
     directory_input: String,
 
+    // models.dev data
+    models_dev_data: Option<std::collections::HashMap<String, crate::models_dev::ModelsDevProvider>>,
+    oauth_default_model: Option<(String, String)>,
+
     // Model discovery UI state
     show_model_discovery: bool,
     discovery_provider: Option<String>,
@@ -166,6 +170,8 @@ enum UiMsg {
     RecordingStopped,
     Transcription(String),
     AudioError(String),
+    // models.dev events
+    ModelsDevFetched(std::collections::HashMap<String, crate::models_dev::ModelsDevProvider>),
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -285,6 +291,8 @@ impl OpenCodeApp {
             agents_pane_collapsed: false,
             default_agent: "build".to_string(),
             commonmark_cache: egui_commonmark::CommonMarkCache::default(),
+            models_dev_data: None,
+            oauth_default_model: None,
         }
     }
 
@@ -315,6 +323,21 @@ impl OpenCodeApp {
             } else {
                 eprintln!("No Whisper model found. Run 'cargo make dev' to auto-setup.");
             }
+
+            // Fetch models.dev data for dynamic model selection
+            let tx_models = tx.clone();
+            let egui_ctx_models = ctx.clone();
+            rt.spawn(async move {
+                match crate::models_dev::fetch_models_dev().await {
+                    Ok(data) => {
+                        let _ = tx_models.send(UiMsg::ModelsDevFetched(data));
+                        egui_ctx_models.request_repaint();
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to fetch models.dev: {}", e);
+                    }
+                }
+            });
         }
 
         self.server_in_flight = true;
@@ -761,6 +784,14 @@ impl OpenCodeApp {
                                 tool_calls: Vec::new(),
                             });
                         }
+                    }
+                    UiMsg::ModelsDevFetched(data) => {
+                        // Find the latest Haiku model for OAuth default
+                        if let Some((provider, model_id)) = crate::models_dev::find_latest_haiku(&data) {
+                            eprintln!("✓ models.dev: Using {} for OAuth default", model_id);
+                            self.oauth_default_model = Some((provider, model_id));
+                        }
+                        self.models_dev_data = Some(data);
                     }
                 }
             }
@@ -2142,11 +2173,11 @@ impl eframe::App for OpenCodeApp {
         {
             let tab_idx = 0;
             
-            // If OAuth is enabled, default to Claude Sonnet
+            // If OAuth is enabled, use the latest Haiku from models.dev
             let default_model = if self.oauth_token.is_some() {
-                 Some(("anthropic".to_string(), "claude-3-5-sonnet-latest".to_string()))
+                self.oauth_default_model.clone()
             } else {
-                 None
+                None
             };
 
             self.tabs.push(Tab {
@@ -3009,7 +3040,20 @@ impl eframe::App for OpenCodeApp {
                                     } else {
                                         // No model selected, check if anthropic OAuth is available
                                         if self.connected_providers.contains(&"anthropic".to_string()) {
-                                            "🟢 (Anthropic Subscription)".to_string()
+                                            // Show the actual OAuth default model if available
+                                            if let Some((provider, model_id)) = &self.oauth_default_model {
+                                                let model_name = if let Some(dev_data) = &self.models_dev_data {
+                                                    dev_data.get(provider)
+                                                        .and_then(|p| p.models.get(model_id))
+                                                        .map(|m| m.name.clone())
+                                                        .unwrap_or_else(|| model_id.clone())
+                                                } else {
+                                                    model_id.clone()
+                                                };
+                                                format!("🟢 {} (Subscription)", model_name)
+                                            } else {
+                                                "🟢 (Anthropic Subscription)".to_string()
+                                            }
                                         } else {
                                             match &self.auth_sync_state.status {
                                                 crate::startup::auth::AuthSyncStatus::InProgress => {
