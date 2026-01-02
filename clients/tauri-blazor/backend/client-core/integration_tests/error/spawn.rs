@@ -122,5 +122,8 @@ fn given_spawn_error_with_source_when_inspected_then_preserves_chain() {
     // THEN: Should preserve the source chain with original error message
     assert!(source.is_some(), "Should have error source");
     let source_msg = format!("{}", source.unwrap());
-    assert!(source_msg.contains("permission denied"), "Should preserve underlying error message");
+    assert!(
+        source_msg.contains("permission denied"),
+        "Should preserve underlying error message"
+    );
 }

@@ -147,10 +147,13 @@ fn given_port_override_with_no_server_when_discover_called_then_returns_ok() {
 #[test]
 fn given_no_servers_running_when_discover_called_then_returns_ok() {
     // GIVEN: No opencode servers running (assumed in test environment)
-    
+
     // WHEN: Discovering servers
     let result = discover();
 
     // THEN: Should return Ok (not an error)
-    assert!(result.is_ok(), "Discovery should not error when no servers found");
+    assert!(
+        result.is_ok(),
+        "Discovery should not error when no servers found"
+    );
 }

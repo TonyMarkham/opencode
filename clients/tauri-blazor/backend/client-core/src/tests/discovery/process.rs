@@ -14,10 +14,10 @@ use crate::discovery::process::{format_command, with_process};
 fn given_valid_process_when_format_command_called_then_returns_command_string() {
     // GIVEN: A valid process (using our own PID)
     let our_pid = std::process::id();
-    
+
     // WHEN: Calling format_command on the process
     let result = with_process(our_pid, |p| format_command(p));
-    
+
     // THEN: Should return Some with non-empty command string
     assert!(result.is_some(), "Should find the process");
     let cmd = result.unwrap();
@@ -35,12 +35,15 @@ fn given_valid_process_when_format_command_called_then_returns_command_string() 
 fn given_nonexistent_pid_when_with_process_called_then_returns_none() {
     // GIVEN: A PID that doesn't exist
     let fake_pid = u32::MAX;
-    
+
     // WHEN: Calling with_process with the invalid PID
     let result = with_process(fake_pid, |_| true);
-    
+
     // THEN: Should return None (graceful handling)
-    assert!(result.is_none(), "Should return None for non-existent process");
+    assert!(
+        result.is_none(),
+        "Should return None for non-existent process"
+    );
 }
 
 /// **VALUE**: Tests that `with_process()` actually executes the closure for valid PIDs.
@@ -54,11 +57,15 @@ fn given_nonexistent_pid_when_with_process_called_then_returns_none() {
 fn given_valid_pid_when_with_process_called_then_executes_closure() {
     // GIVEN: A valid PID (our own process)
     let our_pid = std::process::id();
-    
+
     // WHEN: Calling with_process with a closure that returns the PID
     let result = with_process(our_pid, |p| p.pid().as_u32());
-    
+
     // THEN: Should execute closure and return the PID
     assert!(result.is_some(), "Should find the process");
-    assert_eq!(result.unwrap(), our_pid, "Should execute closure with correct process");
+    assert_eq!(
+        result.unwrap(),
+        our_pid,
+        "Should execute closure with correct process"
+    );
 }

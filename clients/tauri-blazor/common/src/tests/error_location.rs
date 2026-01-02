@@ -21,7 +21,10 @@ fn given_location_caller_when_error_location_created_then_captures_file_line_col
     let location = ErrorLocation::from(Location::caller());
 
     // THEN: Should capture file, line, and column
-    assert!(location.file.contains("error_location.rs"), "Should capture file path");
+    assert!(
+        location.file.contains("error_location.rs"),
+        "Should capture file path"
+    );
     assert_eq!(location.line, 16, "Should capture correct line number");
     assert!(location.column > 0, "Should capture column number");
 }
@@ -42,17 +45,30 @@ fn given_location_caller_when_error_location_created_then_captures_file_line_col
 fn given_error_location_when_formatted_then_produces_bracketed_format() {
     // GIVEN: An ErrorLocation
     let location = ErrorLocation::from(Location::caller());
-    
+
     // WHEN: Formatting as string
     let formatted = format!("{}", location);
 
     // THEN: Should produce "[file:line:column]" format
     assert!(formatted.starts_with('['), "Should start with '['");
     assert!(formatted.ends_with(']'), "Should end with ']'");
-    assert!(formatted.contains("error_location.rs"), "Should include filename");
-    assert!(formatted.contains(&location.line.to_string()), "Should include line number");
-    assert!(formatted.contains(&location.column.to_string()), "Should include column number");
-    assert_eq!(formatted.matches(':').count(), 2, "Should have exactly 2 colons");
+    assert!(
+        formatted.contains("error_location.rs"),
+        "Should include filename"
+    );
+    assert!(
+        formatted.contains(&location.line.to_string()),
+        "Should include line number"
+    );
+    assert!(
+        formatted.contains(&location.column.to_string()),
+        "Should include column number"
+    );
+    assert_eq!(
+        formatted.matches(':').count(),
+        2,
+        "Should have exactly 2 colons"
+    );
 }
 
 /// **VALUE**: Verifies that `#[track_caller]` propagation works correctly.

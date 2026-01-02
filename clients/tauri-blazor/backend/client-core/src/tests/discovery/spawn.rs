@@ -1,8 +1,8 @@
 // Unit tests for spawn module private functions
 // Integration tests for public API are in integration_tests/discovery/spawn.rs
 
-use crate::discovery::spawn::{build_spawn_command, get_url_regex};
 use crate::OPENCODE_BINARY;
+use crate::discovery::spawn::{build_spawn_command, get_url_regex};
 
 /// **VALUE**: Verifies that `build_spawn_command()` constructs commands with the correct binary name.
 ///
@@ -15,10 +15,10 @@ use crate::OPENCODE_BINARY;
 fn given_port_arg_when_build_spawn_command_called_then_sets_correct_binary() {
     // GIVEN: A port argument
     let port = "4096";
-    
+
     // WHEN: Building the spawn command
     let cmd = build_spawn_command(port);
-    
+
     // THEN: Should use the correct binary name
     let program = cmd.as_std().get_program();
     assert_eq!(program, OPENCODE_BINARY, "Should use correct binary name");
@@ -36,10 +36,10 @@ fn given_valid_server_url_when_regex_applied_then_matches_and_extracts_parts() {
     // GIVEN: A valid server URL in stdout output
     let re = get_url_regex();
     let test_line = "Server listening on http://127.0.0.1:4096";
-    
+
     // WHEN: Applying the regex
     let caps = re.captures(test_line);
-    
+
     // THEN: Should match and extract host and port
     assert!(caps.is_some(), "Regex should match valid URL");
     let caps = caps.unwrap();
@@ -61,11 +61,11 @@ fn given_invalid_urls_when_regex_applied_then_does_not_match() {
     let invalid_cases = vec![
         "not a url at all",
         "http://",
-        "http://localhost",      // no port
-        "localhost:4096",         // no protocol
-        "ftp://127.0.0.1:4096",  // wrong protocol
+        "http://localhost",     // no port
+        "localhost:4096",       // no protocol
+        "ftp://127.0.0.1:4096", // wrong protocol
     ];
-    
+
     // WHEN: Applying regex to invalid URLs
     // THEN: Should not match any of them
     for invalid in invalid_cases {
@@ -93,7 +93,7 @@ fn given_various_port_numbers_when_regex_applied_then_extracts_correctly() {
         ("http://127.0.0.1:65535", "65535"),
         ("http://127.0.0.1:1", "1"),
     ];
-    
+
     // WHEN: Applying regex to each URL
     // THEN: Should extract the correct port number
     for (line, expected_port) in test_cases {

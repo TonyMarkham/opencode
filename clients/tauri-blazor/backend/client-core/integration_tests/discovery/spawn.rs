@@ -1,5 +1,5 @@
-use client_core::error::spawn::SpawnError;
 use client_core::discovery::spawn::spawn_and_wait;
+use client_core::error::spawn::SpawnError;
 
 // ============================================================================
 // Public API tests for server spawning
@@ -35,10 +35,10 @@ use client_core::discovery::spawn::spawn_and_wait;
 #[tokio::test]
 async fn given_any_environment_when_spawn_and_wait_called_then_handles_gracefully() {
     // GIVEN: Any environment (binary may or may not exist)
-    
+
     // WHEN: Attempting to spawn and wait for server
     let result = spawn_and_wait().await;
-    
+
     // THEN: Should handle all outcomes gracefully (no panic)
     match result {
         Ok(server_info) => {
@@ -57,6 +57,6 @@ async fn given_any_environment_when_spawn_and_wait_called_then_handles_gracefull
             // Expected: server spawned but didn't become healthy
         }
     }
-    
+
     // The test passes regardless - we're verifying graceful handling
 }
