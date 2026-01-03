@@ -27,13 +27,13 @@ Build the Blazor WebAssembly frontend that calls Tauri commands via C# IJSRuntim
 
 ### Step 1: Initialize Blazor WASM Project
 
-**Goal:** Create a .NET 9 Blazor WASM project with proper dependencies
+**Goal:** Create a .NET 10 Blazor WASM project with proper dependencies
 
 **Tasks:**
 
 1. Create `frontend/` directory in `clients/tauri-blazor/apps/desktop/opencode/frontend/`
 
-2. Initialize .NET 9 Blazor WASM project:
+2. Initialize .NET 10 Blazor WASM project:
 
    ```bash
    cd clients/tauri-blazor/apps/desktop/opencode
@@ -86,7 +86,7 @@ Build the Blazor WebAssembly frontend that calls Tauri commands via C# IJSRuntim
 
 **Technical Details:**
 
-- Use .NET 9 (latest stable, better performance than .NET 8)
+- Use .NET 10 (latest stable, better performance than .NET 8)
 - Radzen 5.8.8+ for UI components (no custom DOM manipulation needed)
 - Markdig for markdown rendering (will be used in Session 4 for chat)
 - Publish to `wwwroot/` so Tauri can serve static files
@@ -553,7 +553,7 @@ Build the Blazor WebAssembly frontend that calls Tauri commands via C# IJSRuntim
 ## Important Reminders
 
 1. **Zero custom JavaScript** - All Tauri IPC via C# IJSRuntime only
-2. **.NET 9.0** - Use latest stable .NET version
+2. **.NET 10.0** - Use latest stable .NET version
 3. **Radzen components** - Use for all UI (buttons, cards, notifications)
 4. **Error handling** - Show user-friendly error messages via Radzen notifications
 5. **Loading states** - Use `IsBusy` prop on buttons for better UX

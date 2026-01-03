@@ -401,7 +401,7 @@ Build a new Tauri + Blazor WebAssembly desktop client as an alternative to egui,
 ## Technical Constraints
 
 1. **Zero Custom JavaScript** - All Tauri IPC via C# IJSRuntime only
-2. **.NET 9.0+** - Target modern .NET for best Blazor support
+2. **.NET 10.0+** - Target modern .NET for best Blazor support
 3. **Tauri 2.9.5+** - Match Cognexus proven version
 4. **Radzen Components** - Use for all UI (no custom DOM manipulation)
 5. **Shared Rust Code** - Maximize code reuse between egui and tauri-blazor
@@ -440,7 +440,7 @@ Build a new Tauri + Blazor WebAssembly desktop client as an alternative to egui,
 
 ## Open Questions
 
-1. ~~Should we use .NET 9 or .NET 10?~~ → **Use .NET 9 (more stable, LTS-adjacent)**
+1. ~~Should we use .NET 9 or .NET 10?~~ → **Use .NET 10 (more stable, LTS-adjacent)**
 2. ~~justfile vs Bun integration?~~ → **Start with justfile (proven in Cognexus), integrate with Bun later**
 3. Audio/STT approach? → **Defer to future session (not in MVP)**
 4. Mobile support? → **No, desktop only for now**
