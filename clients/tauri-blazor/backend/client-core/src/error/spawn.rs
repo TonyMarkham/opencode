@@ -1,4 +1,5 @@
 use models::ErrorLocation;
+use models::ModelError;
 
 use serde::de::StdError;
 use thiserror::Error as ThisError;
@@ -24,4 +25,20 @@ pub enum SpawnError {
         message: String,
         location: ErrorLocation,
     },
+
+    #[error("Validation Error: {message} {location}")]
+    Validation {
+        message: String,
+        location: ErrorLocation,
+    },
+}
+
+impl From<ModelError> for SpawnError {
+    fn from(error: ModelError) -> Self {
+        match error {
+            ModelError::Validation { message, location } => {
+                SpawnError::Validation { message, location }
+            }
+        }
+    }
 }

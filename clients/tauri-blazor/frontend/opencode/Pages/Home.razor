@@ -1,0 +1,139 @@
+﻿@page "/"
+@using OpenCode.Services
+@using Opencode.Server
+@using Radzen
+@inject IServerService ServerService
+@inject NotificationService NotificationService
+
+<PageTitle>OpenCode - Home</PageTitle>
+
+<RadzenCard>
+    <RadzenStack Gap="1rem">
+        <RadzenText TextStyle="TextStyle.H3">Server Status</RadzenText>
+
+        @if (serverInfo != null)
+        {
+            <RadzenAlert AlertStyle="AlertStyle.Success">
+                <RadzenText>
+                    Server running: PID @serverInfo.Pid on @serverInfo.BaseUrl
+                </RadzenText>
+            </RadzenAlert>
+        }
+        else
+        {
+            <RadzenAlert AlertStyle="AlertStyle.Warning">
+                No server connected
+            </RadzenAlert>
+        }
+
+        <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+            <RadzenButton Text="Discover Server"
+                          Click="OnDiscoverAsync"
+                          IsBusy="isLoading" />
+
+            <RadzenButton Text="Spawn Server"
+                          Click="OnSpawnAsync"
+                          IsBusy="isLoading"
+                          Variant="Variant.Filled" />
+
+            <RadzenButton Text="Check Health"
+                          Click="OnCheckHealthAsync"
+                          IsBusy="isLoading"
+                          Disabled="@(serverInfo == null)" />
+
+            <RadzenButton Text="Stop Server"
+                          Click="OnStopAsync"
+                          IsBusy="isLoading"
+                          ButtonStyle="ButtonStyle.Danger"
+                          Disabled="@(serverInfo == null)" />
+        </RadzenStack>
+    </RadzenStack>
+</RadzenCard>
+
+@code {
+    private ServerInfo? serverInfo;
+    private bool isLoading;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await OnDiscoverAsync();
+    }
+
+    private async Task OnDiscoverAsync()
+    {
+        isLoading = true;
+        try
+        {
+            serverInfo = await ServerService.DiscoverServerAsync();
+
+            if (serverInfo != null)
+                NotificationService.Notify(NotificationSeverity.Success, "Server discovered");
+            else
+                NotificationService.Notify(NotificationSeverity.Info, "No server found");
+        }
+        catch (Exception ex)
+        {
+            NotificationService.Notify(NotificationSeverity.Error, "Discovery failed", ex.Message);
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task OnSpawnAsync()
+    {
+        isLoading = true;
+        try
+        {
+            serverInfo = await ServerService.SpawnServerAsync();
+            NotificationService.Notify(NotificationSeverity.Success, "Server spawned");
+        }
+        catch (Exception ex)
+        {
+            NotificationService.Notify(NotificationSeverity.Error, "Spawn failed", ex.Message);
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task OnCheckHealthAsync()
+    {
+        isLoading = true;
+        try
+        {
+            var healthy = await ServerService.CheckHealthAsync();
+            var severity = healthy ? NotificationSeverity.Success : NotificationSeverity.Warning;
+            NotificationService.Notify(severity, healthy ? "Server healthy" : "Server unhealthy");
+        }
+        catch (Exception ex)
+        {
+            NotificationService.Notify(NotificationSeverity.Error, "Health check failed", ex.Message);
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task OnStopAsync()
+    {
+        isLoading = true;
+        try
+        {
+            await ServerService.StopServerAsync();
+            serverInfo = null;
+            NotificationService.Notify(NotificationSeverity.Success, "Server stopped");
+        }
+        catch (Exception ex)
+        {
+            NotificationService.Notify(NotificationSeverity.Error, "Stop failed", ex.Message);
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+}

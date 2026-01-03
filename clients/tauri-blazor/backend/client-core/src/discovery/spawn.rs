@@ -2,8 +2,8 @@ use crate::discovery::{get_override_port, process::check_health};
 use crate::error::spawn::SpawnError;
 use crate::{OPENCODE_BINARY, OPENCODE_SERVER_BASE_URL, OPENCODE_SERVER_HOSTNAME};
 
-use models::ErrorLocation;
 use models::ServerInfo;
+use models::{ErrorLocation, ServerInfoBuilder};
 
 use std::env::current_exe;
 use std::io::Error as IoError;
@@ -88,14 +88,16 @@ pub async fn spawn_and_wait() -> Result<ServerInfo, SpawnError> {
     // The OS will clean it up when it exits
     forget(child);
 
-    Ok(ServerInfo {
-        pid,
-        port,
-        base_url,
-        name: OPENCODE_BINARY.to_string(),
-        command: format!("{OPENCODE_BINARY} {SERVE_COMMAND}"),
-        owned: true,
-    })
+    let server_info = ServerInfoBuilder::default()
+        .with_pid(pid)
+        .with_port(port)
+        .with_base_url(base_url)
+        .with_name(OPENCODE_BINARY)
+        .with_command(format!("{OPENCODE_BINARY} {SERVE_COMMAND}"))
+        .with_owned(true)
+        .build()?;
+
+    Ok(server_info)
 }
 
 async fn spawn_server_process(port: &str) -> Result<TokioChild, SpawnError> {

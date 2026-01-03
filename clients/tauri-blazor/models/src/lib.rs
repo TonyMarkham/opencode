@@ -19,4 +19,6 @@ mod server_info;
 mod tests;
 
 pub use error::error_location::ErrorLocation;
-pub use server_info::ServerInfo;
+pub use error::model_error::ModelError;
+pub use server_info::builder::ServerInfoBuilder;
+pub use server_info::info::ServerInfo;

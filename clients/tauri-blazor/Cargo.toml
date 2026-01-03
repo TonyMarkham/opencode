@@ -9,7 +9,7 @@ resolver = "3"
 
 [workspace.dependencies]
 serde = { version = "1.0.228", features = ["derive"] }
-tokio = { version = "1.48.0", features = ["rt-multi-thread", "macros", "process"] }
+tokio = { version = "1.49.0", features = ["rt-multi-thread", "macros", "process"] }
 serde_json = { version = "1.0.148" }
 reqwest = { version = "0.13.1", features = ["json", "rustls"] }
 sysinfo = { version = "0.37.2" }
@@ -23,6 +23,8 @@ backoff = { version = "0.4.0" }
 const_format = { version = "0.2.35" }
 tauri = { version = "2.9.5" }
 tauri-build = { version = "2.5.3", features = [] }
+prost = { version = "0.14.1" }
+prost-build = { version = "0.14.1" }
 
 models = { path = "models" }
 client-core = { path = "backend/client-core" }

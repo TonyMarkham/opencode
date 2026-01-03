@@ -1,0 +1,13 @@
+syntax = "proto3";
+
+package opencode.server;
+
+// Information about a discovered or spawned OpenCode server
+message ServerInfo {
+  uint32 pid = 1;
+  uint32 port = 2;
+  string base_url = 3;
+  string name = 4;
+  string command = 5;
+  bool owned = 6;
+}

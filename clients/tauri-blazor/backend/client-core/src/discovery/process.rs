@@ -1,9 +1,9 @@
-use crate::OPENCODE_SERVER_BASE_URL;
 use crate::discovery::get_override_port;
 use crate::error::discovery::DiscoveryError;
+use crate::{OPENCODE_BINARY, OPENCODE_SERVER_BASE_URL};
 
-use models::ServerInfo;
 use models::error::error_location::ErrorLocation;
+use models::{ServerInfo, ServerInfoBuilder};
 
 use std::panic::Location;
 use std::thread::sleep;
@@ -55,14 +55,16 @@ fn discover_on_port(port: u16) -> Result<Option<ServerInfo>, DiscoveryError> {
 
                 debug!("Discovered server: {name} (PID: {pid})");
 
-                return Ok(Some(ServerInfo {
-                    pid,
-                    port,
-                    base_url,
-                    name,
-                    command,
-                    owned: false,
-                }));
+                let server_info = ServerInfoBuilder::default()
+                    .with_pid(pid)
+                    .with_port(port)
+                    .with_base_url(base_url)
+                    .with_name(OPENCODE_BINARY)
+                    .with_command(format!("{OPENCODE_BINARY} {command}"))
+                    .with_owned(true)
+                    .build()?;
+
+                return Ok(Some(server_info));
             }
 
             trace!("Process {pid} disappeared before we could read its info");
@@ -116,14 +118,16 @@ fn discover_by_process_scan() -> Result<Option<ServerInfo>, DiscoveryError> {
 
             debug!("Discovered server: {name} on port {port} (PID: {pid_u32})");
 
-            return Ok(Some(ServerInfo {
-                pid: pid_u32,
-                port,
-                base_url,
-                name,
-                command,
-                owned: false,
-            }));
+            let server_info = ServerInfoBuilder::default()
+                .with_pid(pid_u32)
+                .with_port(port)
+                .with_base_url(base_url)
+                .with_name(OPENCODE_BINARY)
+                .with_command(format!("{OPENCODE_BINARY} {command}"))
+                .with_owned(true)
+                .build()?;
+
+            return Ok(Some(server_info));
         }
     }
 

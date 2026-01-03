@@ -56,6 +56,10 @@ async fn given_any_environment_when_spawn_and_wait_called_then_handles_gracefull
         Err(SpawnError::Timeout { .. }) => {
             // Expected: server spawned but didn't become healthy
         }
+        Err(SpawnError::Validation { .. }) => {
+            // Unexpected: builder validation failed (should not happen in normal spawn flow)
+            panic!("Builder validation failed - this indicates a bug in spawn logic");
+        }
     }
 
     // The test passes regardless - we're verifying graceful handling
