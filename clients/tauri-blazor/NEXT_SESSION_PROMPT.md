@@ -52,10 +52,10 @@ Build the Blazor WebAssembly frontend that calls Tauri commands via C# IJSRuntim
 
      <ItemGroup>
        <!-- Radzen Blazor Components -->
-       <PackageReference Include="Radzen.Blazor" Version="5.8.8" />
+       <PackageReference Include="Radzen.Blazor" Version="8.4.2" />
 
        <!-- Markdown Rendering -->
-       <PackageReference Include="Markdig" Version="0.38.0" />
+       <PackageReference Include="Markdig" Version="0.44.0" />
 
        <!-- Blazor WASM -->
        <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.0" />
