@@ -3,7 +3,7 @@ use models::ServerInfo;
 use std::sync::Arc;
 
 use log::{info, warn};
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{Mutex, RwLock, mpsc};
 
 /// Commands that mutate application state.
 ///
@@ -28,34 +28,36 @@ pub enum StateCommand {
 #[derive(Clone)]
 pub struct AppState {
     /// Channel to send state mutation commands to the actor
-    command_tx: mpsc::Sender<StateCommand>,
+    command_tx: Arc<Mutex<Option<mpsc::Sender<StateCommand>>>>,
 
     /// Shared read-only access to server info
     server: Arc<RwLock<Option<ServerInfo>>>,
+
+    /// Track if actor has been initialized (NEW)
+    actor_init: Arc<Mutex<bool>>,
 }
 
 impl AppState {
-    /// Create a new state manager and spawn the state actor.
+    /// Create a new state manager.
     ///
-    /// The actor task runs in the background processing state mutations
-    /// sequentially, ensuring no race conditions.
+    /// The actor will be lazily spawned on first use within an async context.
     pub fn new() -> Self {
-        let (command_tx, command_rx) = mpsc::channel(100);
-        let server = Arc::new(RwLock::new(None));
-
-        // Spawn the state actor task
-        let server_clone = Arc::clone(&server);
-        tokio::spawn(state_actor(command_rx, server_clone));
-
-        Self { command_tx, server }
+        Self {
+            command_tx: Arc::new(Mutex::new(None)),
+            server: Arc::new(RwLock::new(None)),
+            actor_init: Arc::new(Mutex::new(false)),
+        }
     }
 
     /// Send a state update command.
     ///
     /// Returns an error if the state actor has died (should never happen).
     pub async fn update(&self, cmd: StateCommand) -> Result<(), String> {
-        self.command_tx
-            .send(cmd)
+        self.ensure_actor().await; // ADD THIS LINE
+
+        let tx_guard = self.command_tx.lock().await; // CHANGED: now needs lock
+        let tx = tx_guard.as_ref().ok_or("Actor not initialized")?; // CHANGED
+        tx.send(cmd)
             .await
             .map_err(|e| format!("State actor died: {}", e))
     }
@@ -66,6 +68,24 @@ impl AppState {
     /// block on state mutations.
     pub async fn get_server(&self) -> Option<ServerInfo> {
         self.server.read().await.clone()
+    }
+
+    /// Ensure actor is spawned (called lazily from async context)
+    async fn ensure_actor(&self) {
+        let mut init_guard = self.actor_init.lock().await;
+        if !*init_guard {
+            let (tx, rx) = mpsc::channel(100);
+            let server_clone = Arc::clone(&self.server);
+
+            // Store tx BEFORE spawning to avoid race
+            let mut tx_guard = self.command_tx.lock().await;
+            *tx_guard = Some(tx);
+            drop(tx_guard); // Release before spawn
+
+            tokio::spawn(state_actor(rx, server_clone));
+            *init_guard = true;
+            info!("State actor spawned");
+        }
     }
 }
 

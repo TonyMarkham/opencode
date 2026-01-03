@@ -16,7 +16,6 @@ use tauri::Manager;
 
 fn main() {
     tauri::Builder::default()
-        .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             commands::server::discover_server,
             commands::server::spawn_server,
@@ -44,6 +43,9 @@ fn main() {
 
             info!("OpenCode Tauri application starting");
             info!("Log directory: {}", log_dir.display());
+
+            // Initialize AppState AFTER Tauri runtime is running
+            app.manage(AppState::default());
 
             Ok(())
         })
