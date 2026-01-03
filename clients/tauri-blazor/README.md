@@ -35,15 +35,16 @@ clients/tauri-blazor/                        # Feature root (self-contained)
 │       │   ├── discovery/
 │       │   └── error/
 │       └── Cargo.toml                       # client-core crate manifest
-├── common/                                  # Shared utilities across crates
+├── models/                                   # Shared models and utilities across crates
 │   ├── src/
-│   │   ├── lib.rs                           # Public API exports
+│   │   ├── lib.rs                           # Public API exports with layer docs
+│   │   ├── server_info.rs                   # ServerInfo model
 │   │   ├── error/
 │   │   │   ├── mod.rs                       # Error utilities module
 │   │   │   └── error_location.rs            # ErrorLocation trait
 │   │   └── tests/                           # Unit tests
 │   │       └── error_location.rs
-│   └── Cargo.toml                           # common crate manifest
+│   └── Cargo.toml                           # models crate manifest
 ├── frontend/                                # Blazor source code
 │   └── opencode/                            # Blazor project
 │       ├── Pages/                           # Blazor pages/components
@@ -61,8 +62,9 @@ clients/tauri-blazor/                        # Feature root (self-contained)
 - **Shared Core** (`backend/client-core/`): Reusable Rust logic for server discovery, spawning, and health checks
   - Unit tests in `src/tests/` (mirror source structure)
   - Integration tests in `integration_tests/` (configured via `[[test]]` in Cargo.toml)
-- **Common Utilities** (`common/`): Shared utilities like ErrorLocation trait used across all crates
+- **Models & Utilities** (`models/`): Shared models (ServerInfo) and utilities (ErrorLocation trait) used across all crates
   - Unit tests in `src/tests/`
+  - Contains teaching-focused documentation about layered architecture
 - **Blazor Frontend** (`frontend/opencode/`): C# Blazor WebAssembly UI compiled to the `apps/desktop/opencode/frontend/` directory
 
 ## Development

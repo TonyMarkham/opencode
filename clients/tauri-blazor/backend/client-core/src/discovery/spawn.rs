@@ -1,11 +1,9 @@
-use crate::discovery::{
-    get_override_port,
-    process::{ServerInfo, check_health},
-};
+use crate::discovery::{get_override_port, process::check_health};
 use crate::error::spawn::SpawnError;
 use crate::{OPENCODE_BINARY, OPENCODE_SERVER_BASE_URL, OPENCODE_SERVER_HOSTNAME};
 
-use common::ErrorLocation;
+use models::ErrorLocation;
+use models::ServerInfo;
 
 use std::env::current_exe;
 use std::io::Error as IoError;

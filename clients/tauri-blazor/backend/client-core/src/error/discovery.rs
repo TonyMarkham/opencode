@@ -1,4 +1,4 @@
-use common::ErrorLocation;
+use models::ErrorLocation;
 
 use std::error::Error as StdError;
 

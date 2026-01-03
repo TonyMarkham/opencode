@@ -1,11 +1,8 @@
+use serde::Serialize;
 use std::fmt::{Display, Formatter, Result as FormatResult};
 use std::panic::Location as PanicLocation;
 
-#[cfg(feature = "serde")]
-use serde::Serialize;
-
-#[derive(Debug, Clone, Copy)]
-#[cfg_attr(feature = "serde", derive(Serialize))]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct ErrorLocation {
     pub file: &'static str,
     pub line: u32,

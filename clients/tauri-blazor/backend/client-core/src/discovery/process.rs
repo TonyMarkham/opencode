@@ -2,7 +2,8 @@ use crate::OPENCODE_SERVER_BASE_URL;
 use crate::discovery::get_override_port;
 use crate::error::discovery::DiscoveryError;
 
-use common::error::error_location::ErrorLocation;
+use models::ServerInfo;
+use models::error::error_location::ErrorLocation;
 
 use std::panic::Location;
 use std::thread::sleep;
@@ -14,29 +15,11 @@ use netstat2::{
     AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo, SocketInfo, TcpState, get_sockets_info,
 };
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, Process, ProcessesToUpdate, Signal, System};
 
 const CHECK_HEALTH_DURATION: Duration = Duration::from_secs(3);
 const HEALTH_CHECK_ENDPOINT: &str = "/doc";
 const KILL_VERIFY_MAX_ELAPSED: Duration = Duration::from_secs(5);
-
-/// Information about a discovered or spawned OpenCode server.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ServerInfo {
-    /// Process ID of the server
-    pub pid: u32,
-    /// Port the server is listening on
-    pub port: u16,
-    /// Base URL for API requests (e.g., "http://127.0.0.1:4096")
-    pub base_url: String,
-    /// Process name (e.g., "bun", "node", "opencode")
-    pub name: String,
-    /// Full command line that started the process
-    pub command: String,
-    /// Whether this server was spawned by this client instance
-    pub owned: bool,
-}
 
 #[track_caller]
 fn query_tcp_sockets() -> Result<Vec<SocketInfo>, DiscoveryError> {

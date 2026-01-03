@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OpenCode",
+  "version": "0.1.0",
+  "identifier": "com.opencode.blazor",
+  "build": {
+    "frontendDist": "./frontend/wwwroot"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "OpenCode",
+        "width": 1200,
+        "height": 800,
+        "decorations": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png"]
+  }
+}

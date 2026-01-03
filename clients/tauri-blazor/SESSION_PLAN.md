@@ -40,30 +40,35 @@ Build a new Tauri + Blazor WebAssembly desktop client as an alternative to egui,
 
 ### Step 1: Implement Tauri State Management
 
-- Create `apps/desktop/opencode/src/state.rs` for shared app state
-- Set up state initialization in main.rs
+- ✅ Create `apps/desktop/opencode/src/state.rs` for shared app state
+- ✅ Refactored from simple Mutex to actor pattern for race-free state management
+- ✅ Set up state initialization in main.rs
 
 ### Step 2: Implement Server Discovery Commands
 
-- Create `apps/desktop/opencode/src/commands/server.rs`
-- Implement `discover_server()`, `spawn_server()`, `check_health()`, `stop_server()`
-- Wire commands into Tauri builder
+- ✅ Create `apps/desktop/opencode/src/commands/server.rs`
+- ✅ Implement `discover_server()`, `spawn_server()`, `check_health()`, `stop_server()`
+- ✅ Wire commands into Tauri builder
+- ✅ Add production-grade logging to all commands
 
 ### Step 3: Test Tauri Commands
 
-- Build Tauri app with minimal HTML frontend
-- Test commands from browser console
-- Verify server discovery/spawn works
+- ✅ Build Tauri app with minimal HTML frontend
+- ✅ Test commands from browser console
+- ✅ Verify server discovery/spawn works
+- ✅ Test full lifecycle: discover/spawn → health → stop
 
-**Status:** ⏳ Pending
+**Status:** ✅ Complete
 
-**Estimated Tokens:** ~100K
+**Actual Tokens:** ~120K
 
 **Deliverables:**
 
 - ✅ Tauri commands working for server operations
 - ✅ Can discover/spawn OpenCode server from Tauri
-- ✅ State management functional
+- ✅ State management functional (actor pattern, race-free)
+- ✅ Production-grade logging throughout
+- ✅ Clippy clean with `-D warnings`
 
 ---
 
@@ -213,9 +218,12 @@ Build a new Tauri + Blazor WebAssembly desktop client as an alternative to egui,
 
 ### Session 2
 
-- [ ] Tauri commands for server operations work
-- [ ] Can discover running OpenCode server
-- [ ] Can spawn new OpenCode server
+- [x] Tauri commands for server operations work
+- [x] Can discover running OpenCode server
+- [x] Can spawn new OpenCode server
+- [x] Actor-based state management (race-free)
+- [x] Production-grade logging
+- [x] Clippy clean with `-D warnings`
 
 ### Session 3
 
@@ -295,12 +303,98 @@ Build a new Tauri + Blazor WebAssembly desktop client as an alternative to egui,
 
 **Deferred to Session 2:**
 
-- Tauri scaffold (`apps/desktop/opencode/`)
+- ~~Tauri scaffold (`apps/desktop/opencode/`)~~ ✅ Complete
 - No changes to egui client (remains independent)
 
 **Next Steps:**
 
-- Session 2 will scaffold Tauri backend and wire up commands to `client-core`
+- ~~Session 2 will scaffold Tauri backend and wire up commands to `client-core`~~ ✅ Complete
+
+---
+
+### Session 2 (2026-01-03) ✅
+
+**Accomplishments:**
+
+- ✅ Created Tauri 2.9.5 project at `apps/desktop/opencode/`
+- ✅ Configured `tauri.conf.json` following Cognexus pattern (CSP null for Blazor)
+- ✅ Created `build.rs` and `main.rs` with proper initialization
+- ✅ Updated workspace `Cargo.toml` to include new member
+- ✅ Implemented **production-grade state management**:
+  - **Refactored from simple `Arc<Mutex<T>>` to actor pattern**
+  - Eliminated all race conditions by design
+  - State actor runs in dedicated task processing commands sequentially
+  - Uses `Arc<RwLock<T>>` for lock-free reads
+  - Created `StateCommand` enum for mutations
+- ✅ Implemented error handling:
+  - Created `OpencodeError` enum (Opencode, Core, NoServer, StopFailed)
+  - All errors include `ErrorLocation` tracking
+  - Removed `StateLock` error variant (impossible with actor pattern)
+- ✅ Implemented 4 Tauri commands:
+  - `discover_server()` - discovers running server, updates state via actor
+  - `spawn_server()` - spawns new server, updates state via actor
+  - `check_health()` - checks server health from state
+  - `stop_server()` - stops server, clears state via actor
+- ✅ Created production-grade logging infrastructure:
+  - Dual output: colored stdout + plain text file
+  - Thread-safe initialization with `Once` + `AtomicBool`
+  - Different log levels for debug/release builds
+  - Integrated into `main.rs` setup hook
+- ✅ **Architecture refactoring:**
+  - Renamed `common/` → `models/` for teaching clarity
+  - Added module-level documentation explaining layered architecture
+  - Moved `ServerInfo` to `models/server_info.rs`
+  - All imports updated from `common::` to `models::`
+- ✅ Testing:
+  - Created test HTML frontend
+  - Verified all commands work via browser console
+  - Tested full workflow: discover/spawn → health check → stop
+  - Confirmed state persistence and clean shutdown
+- ✅ Clippy clean with `-D warnings`
+- ✅ Full rustdoc on all public APIs
+
+**Files Created:**
+
+- `apps/desktop/opencode/Cargo.toml` - Tauri package configuration
+- `apps/desktop/opencode/tauri.conf.json` - Tauri app configuration
+- `apps/desktop/opencode/build.rs` - Build script
+- `apps/desktop/opencode/.gitignore` - Tauri-specific ignores
+- `apps/desktop/opencode/src/main.rs` - Entry point with logging setup
+- `apps/desktop/opencode/src/state.rs` - Actor-based state management
+- `apps/desktop/opencode/src/error.rs` - OpencodeError type
+- `apps/desktop/opencode/src/logger.rs` - Production logging infrastructure
+- `apps/desktop/opencode/src/commands/mod.rs` - Commands module
+- `apps/desktop/opencode/src/commands/server.rs` - Server commands with logging
+- `apps/desktop/opencode/frontend/wwwroot/index.html` - Test HTML
+- `models/src/server_info.rs` - Shared ServerInfo model
+
+**Files Modified:**
+
+- `clients/tauri-blazor/Cargo.toml` - Added `apps/desktop/opencode` member, renamed `common` → `models`
+- `clients/tauri-blazor/README.md` - Updated paths, documented `models/` crate
+- `models/src/lib.rs` - Added teaching-focused documentation (formerly `common/`)
+- `backend/client-core/Cargo.toml` - Updated dependency `common` → `models`
+- `backend/client-core/src/lib.rs` - Updated imports `common::` → `models::`
+
+**Technical Decisions:**
+
+- **Actor pattern for state** - Eliminates race conditions by sequential command processing
+- **`&Path` parameter** - More idiomatic than `PathBuf` or `&PathBuf` (clippy recommendation)
+- **CSP null** - Required for Blazor WASM (uses eval)
+- **Renamed `common/` → `models/`** - Better teaching clarity for layered architecture
+- **Production logging from day 1** - Easier debugging, demonstrates best practices
+- **Tech debt addressed immediately** - Refactored race conditions before committing
+
+**Key Learnings:**
+
+- Simple `Arc<Mutex<Option<T>>>` state has race conditions in concurrent environments
+- Actor pattern is industry standard for eliminating state races by design
+- Logging infrastructure pays for itself immediately in complex apps
+- Clear module naming (`models/` vs `common/`) improves teaching effectiveness
+
+**Next Steps:**
+
+- Session 3 will initialize Blazor WASM project and create C# service layer
 
 ---
 

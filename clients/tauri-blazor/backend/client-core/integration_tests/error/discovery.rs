@@ -1,5 +1,6 @@
 use client_core::error::discovery::DiscoveryError;
-use common::ErrorLocation;
+use models::ErrorLocation;
+
 use std::error::Error;
 use std::io::Error as IoError;
 use std::io::ErrorKind;

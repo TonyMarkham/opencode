@@ -1,333 +1,523 @@
-# Next Session: Tauri Backend & Server Commands
+# Next Session: Blazor Frontend Scaffold & Server Integration
 
 ## Quick Context
 
-**What We Completed (Session 1 - 2026-01-02):**
+**What We Completed (Session 2 - 2026-01-03):**
 
-- ✅ Created workspace at `clients/tauri-blazor/` with proper Cargo.toml
-- ✅ Built production-grade `backend/client-core/` crate with discovery + spawn logic
-- ✅ Built `common/` crate for shared ErrorLocation utilities
-- ✅ Implemented complete error handling (CoreError, DiscoveryError, SpawnError)
-- ✅ Implemented discovery module (discover, stop_pid, check_health)
-- ✅ Implemented spawn module (spawn_and_wait with exponential backoff)
-- ✅ Zero magic numbers, DRY helpers, full rustdoc, clippy clean
+- ✅ Created Tauri 2.9.5 project at `apps/desktop/opencode/`
+- ✅ Implemented actor-based state management (race-free)
+- ✅ Created 4 Tauri commands: `discover_server`, `spawn_server`, `check_health`, `stop_server`
+- ✅ Production-grade logging infrastructure
+- ✅ Renamed `common/` → `models/` for teaching clarity
+- ✅ Tested all commands via HTML test frontend
+- ✅ Clippy clean with `-D warnings`
 
 **Current State:**
 
-- `backend/client-core` compiles and passes `cargo clippy -p client-core -- -D warnings` ✅
-- All discovery and spawn logic is production-ready
-- Workspace structure is set up correctly
-- **BUT:** No Tauri backend yet - we need to scaffold `apps/desktop/opencode/` and wire up commands
+- Tauri backend fully functional ✅
+- Can discover/spawn/stop OpenCode server via Tauri commands ✅
+- State management working (actor pattern) ✅
+- **BUT:** No Blazor frontend yet - need to create .NET project and C# service layer
 
 ---
 
-## Your Mission: Session 2 - Tauri Backend Scaffold
+## Your Mission: Session 3 - Blazor Frontend & Service Layer
 
-Build the Tauri backend that exposes `client-core` functionality via Tauri commands, following the zero-custom-JavaScript policy.
+Build the Blazor WebAssembly frontend that calls Tauri commands via C# IJSRuntime, following the zero-custom-JavaScript policy.
 
-### Step 1: Scaffold Tauri Project
+### Step 1: Initialize Blazor WASM Project
 
-**Goal:** Create the `apps/desktop/opencode/` directory with proper Tauri configuration
-
-**Tasks:**
-
-1. Initialize Tauri 2 project in `clients/tauri-blazor/apps/desktop/opencode/`
-   - Use Tauri CLI: `cargo tauri init` (or manually create structure)
-   - Target Tauri 2.9.5+ (match Cognexus proven version)
-   - Configure for Blazor frontend (HTML/WASM loading)
-
-2. Create `apps/desktop/opencode/Cargo.toml` with dependencies:
-
-   ```toml
-   [package]
-   name = "opencode"
-   version = "0.1.0"
-   edition = "2021"
-
-   [dependencies]
-   tauri = { version = "2", features = ["protocol-asset"] }
-   tokio = { version = "1", features = ["full"] }
-   serde = { version = "1", features = ["derive"] }
-   serde_json = "1"
-   reqwest = { version = "0.12", features = ["json"] }
-
-   # Workspace dependencies
-   client-core = { path = "../../../backend/client-core" }
-   common = { path = "../../../common" }
-
-   [build-dependencies]
-   tauri-build = { version = "2" }
-   ```
-
-3. Create `apps/desktop/opencode/tauri.conf.json` with proper configuration:
-   - Set app name, identifier (e.g., `com.opencode.blazor`)
-   - Configure window properties (min size, title, etc.)
-   - Set up frontend dev server URL and build path
-   - Configure bundle/build settings
-   - **Important:** Enable `protocol-asset` for loading Blazor WASM
-
-4. Create `apps/desktop/opencode/build.rs` with Tauri build script:
-
-   ```rust
-   fn main() {
-       tauri_build::build()
-   }
-   ```
-
-5. Update workspace `Cargo.toml` to add new member: `"apps/desktop/opencode"`
-
-6. Verify scaffold compiles: `cargo build -p opencode`
-
-**Technical Details:**
-
-- Follow Tauri 2.x conventions (NOT Tauri 1.x)
-- Use `protocol-asset` for serving Blazor static files
-- Configure CSP (Content Security Policy) to allow WASM execution
-- Set minimum window size appropriate for chat UI (e.g., 800×600)
-
----
-
-### Step 2: Implement Tauri State Management
-
-**Goal:** Create shared application state for managing server connection
+**Goal:** Create a .NET 9 Blazor WASM project with proper dependencies
 
 **Tasks:**
 
-1. Create `apps/desktop/opencode/src/state.rs`:
+1. Create `frontend/` directory in `clients/tauri-blazor/apps/desktop/opencode/frontend/`
 
-   ```rust
-   use std::sync::{Arc, Mutex};
+2. Initialize .NET 9 Blazor WASM project:
 
-   /// Application state shared across all Tauri commands
-   #[derive(Debug, Default)]
-   pub struct AppState {
-       /// Currently connected server info (if any)
-       pub server: Arc<Mutex<Option<ServerInfo>>>,
-   }
-
-   #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-   pub struct ServerInfo {
-       pub pid: u32,
-       pub host: String,
-       pub port: u16,
-   }
+   ```bash
+   cd clients/tauri-blazor/apps/desktop/opencode
+   dotnet new blazorwasm -n OpenCodeBlazor -o frontend
    ```
 
-2. Update `apps/desktop/opencode/src/main.rs` to initialize state:
+3. Update `frontend/OpenCodeBlazor.csproj` with dependencies:
 
-   ```rust
-   #[cfg_attr(mobile, tauri::mobile_entry_point)]
-   pub fn run() {
-       tauri::Builder::default()
-           .manage(AppState::default())
-           .invoke_handler(tauri::generate_handler![/* commands here */])
-           .run(tauri::generate_context!())
-           .expect("error while running tauri application");
-   }
+   ```xml
+   <Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
+     <PropertyGroup>
+       <TargetFramework>net9.0</TargetFramework>
+       <Nullable>enable</Nullable>
+       <ImplicitUsings>enable</ImplicitUsings>
+     </PropertyGroup>
+
+     <ItemGroup>
+       <!-- Radzen Blazor Components -->
+       <PackageReference Include="Radzen.Blazor" Version="5.8.8" />
+
+       <!-- Markdown Rendering -->
+       <PackageReference Include="Markdig" Version="0.38.0" />
+
+       <!-- Blazor WASM -->
+       <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="9.0.0" />
+       <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="9.0.0" PrivateAssets="all" />
+     </ItemGroup>
+   </Project>
    ```
 
-3. Verify state is accessible in commands (we'll test in Step 3)
+4. Configure publish to output to `wwwroot/`:
 
-**Technical Details:**
-
-- Use `Arc<Mutex<T>>` for thread-safe state (Tauri commands run on threadpool)
-- `ServerInfo` must derive `Serialize/Deserialize` for Tauri IPC
-- State is managed by Tauri's DI system via `.manage()`
-
----
-
-### Step 3: Implement Server Discovery Commands
-
-**Goal:** Wire up `client-core` discovery logic to Tauri commands
-
-**Tasks:**
-
-1. Create `apps/desktop/opencode/src/commands/mod.rs`:
-
-   ```rust
-   pub mod server;
+   ```xml
+   <PropertyGroup>
+     <PublishDir>wwwroot</PublishDir>
+   </PropertyGroup>
    ```
 
-2. Create `apps/desktop/opencode/src/commands/server.rs`:
-
-   ```rust
-   use tauri::State;
-   use crate::state::{AppState, ServerInfo};
-   use client_core::discovery;
-
-   /// Discovers a running OpenCode server on localhost
-   #[tauri::command]
-   pub async fn discover_server(
-       state: State<'_, AppState>,
-   ) -> Result<Option<ServerInfo>, String> {
-       // Call client_core::discovery::discover()
-       // Parse result and update state
-       // Return ServerInfo or None
-   }
-
-   /// Spawns a new OpenCode server and waits for health check
-   #[tauri::command]
-   pub async fn spawn_server(
-       state: State<'_, AppState>,
-   ) -> Result<ServerInfo, String> {
-       // Call client_core::spawn::spawn_and_wait()
-       // Update state with new server info
-       // Return ServerInfo
-   }
-
-   /// Checks if the server is healthy
-   #[tauri::command]
-   pub async fn check_health(
-       state: State<'_, AppState>,
-   ) -> Result<bool, String> {
-       // Get server info from state
-       // Call client_core::discovery::check_health()
-       // Return true/false
-   }
-
-   /// Stops the currently connected server
-   #[tauri::command]
-   pub async fn stop_server(
-       state: State<'_, AppState>,
-   ) -> Result<(), String> {
-       // Get server PID from state
-       // Call client_core::discovery::stop_pid()
-       // Clear state
-   }
-   ```
-
-3. Wire commands into `main.rs`:
-
-   ```rust
-   use commands::server::{discover_server, spawn_server, check_health, stop_server};
-
-   .invoke_handler(tauri::generate_handler![
-       discover_server,
-       spawn_server,
-       check_health,
-       stop_server,
-   ])
-   ```
-
-4. Implement proper error conversion:
-   - Convert `client_core::error::CoreError` to `String` for Tauri IPC
-   - Include error location information in error messages
-   - Log errors with context
-
-**Technical Details:**
-
-- All Tauri commands must be `async` and return `Result<T, String>`
-- Use `State<'_, AppState>` to access shared state
-- Error strings should be informative (include error location)
-- Commands run on Tokio threadpool (safe to call async functions)
-
-**Pattern to follow:**
-
-```rust
-#[tauri::command]
-pub async fn example_command(
-    state: State<'_, AppState>,
-) -> Result<ReturnType, String> {
-    match client_core::some_function() {
-        Ok(result) => {
-            // Update state if needed
-            Ok(result)
-        }
-        Err(e) => {
-            // Convert error with location
-            Err(format!("Failed to do thing: {}", e))
-        }
-    }
-}
-```
-
----
-
-### Step 4: Create Minimal HTML Test Frontend
-
-**Goal:** Test Tauri commands from browser console before building Blazor UI
-
-**Tasks:**
-
-1. Create `apps/desktop/opencode/frontend/index.html`:
-
-   ```html
-   <!DOCTYPE html>
-   <html>
-     <head>
-       <meta charset="UTF-8" />
-       <title>OpenCode Blazor (Test)</title>
-     </head>
-     <body>
-       <h1>OpenCode Tauri Backend Test</h1>
-       <p>Open browser console and test commands:</p>
-       <pre>
-   // Discover server
-   await window.__TAURI__.invoke('discover_server')
-   
-   // Spawn server
-   await window.__TAURI__.invoke('spawn_server')
-   
-   // Check health
-   await window.__TAURI__.invoke('check_health')
-   
-   // Stop server
-   await window.__TAURI__.invoke('stop_server')
-       </pre>
-     </body>
-   </html>
-   ```
-
-2. Update `tauri.conf.json` to point to this HTML:
+5. Update `tauri.conf.json` to point to Blazor output:
 
    ```json
    {
      "build": {
-       "frontendDist": "./frontend"
+       "frontendDist": "./frontend/wwwroot"
      }
    }
    ```
 
-3. Test the commands:
-
-   ```bash
-   cd clients/tauri-blazor/apps/desktop/opencode
-   cargo tauri dev
-   ```
-
-   - Open browser console in Tauri window
-   - Run `await window.__TAURI__.invoke('discover_server')`
-   - Verify it returns server info or null
-   - Test spawn, health check, and stop commands
-
-4. Verify full flow:
-   - Spawn server → returns PID, host, port
-   - Check health → returns true
-   - Stop server → succeeds
-   - Check health → returns false or error
+6. Verify project builds: `dotnet build`
 
 **Technical Details:**
 
-- This is a TEMPORARY test frontend (will be replaced with Blazor in Session 3)
-- `window.__TAURI__.invoke()` is the Tauri IPC mechanism
-- Commands return Promises that resolve/reject based on Rust Result
-- All testing from browser console (no custom JS files needed)
+- Use .NET 9 (latest stable, better performance than .NET 8)
+- Radzen 5.8.8+ for UI components (no custom DOM manipulation needed)
+- Markdig for markdown rendering (will be used in Session 4 for chat)
+- Publish to `wwwroot/` so Tauri can serve static files
 
 ---
 
-## Success Criteria for Session 2
+### Step 2: Configure Blazor for Tauri Integration
 
-- [ ] `apps/desktop/opencode/` directory created with proper Tauri 2 structure
-- [ ] Workspace Cargo.toml updated with new member
-- [ ] `cargo build -p opencode` succeeds
-- [ ] `cargo clippy -p opencode -- -D warnings` passes
-- [ ] Tauri app launches with test HTML frontend
-- [ ] `discover_server` command works from browser console
-- [ ] `spawn_server` command spawns server and returns info
-- [ ] `check_health` command returns correct health status
-- [ ] `stop_server` command stops server gracefully
-- [ ] State management works (server info persists between commands)
-- [ ] Error messages include location information from ErrorLocation
+**Goal:** Set up dependency injection and Tauri JSInterop
+
+**Tasks:**
+
+1. Update `frontend/Program.cs` to configure services:
+
+   ```csharp
+   using Microsoft.AspNetCore.Components.Web;
+   using Microsoft.AspNetCore.Components.WebAssembly.Hosting;
+   using OpenCodeBlazor;
+   using Radzen;
+
+   var builder = WebAssemblyHostBuilder.CreateDefault(args);
+   builder.RootComponents.Add<App>("#app");
+   builder.RootComponents.Add<HeadOutlet>("head::after");
+
+   // Radzen services
+   builder.Services.AddRadzenComponents();
+
+   // OpenCode services (we'll create these in Step 2)
+   builder.Services.AddScoped<IServerService, ServerService>();
+
+   await builder.Build().RunAsync();
+   ```
+
+2. Update `frontend/wwwroot/index.html` to include Tauri API:
+
+   ```html
+   <!DOCTYPE html>
+   <html lang="en">
+     <head>
+       <meta charset="utf-8" />
+       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+       <title>OpenCode</title>
+       <base href="/" />
+
+       <!-- Radzen CSS -->
+       <link rel="stylesheet" href="_content/Radzen.Blazor/css/material-base.css" />
+
+       <link href="css/app.css" rel="stylesheet" />
+       <link href="OpenCodeBlazor.styles.css" rel="stylesheet" />
+     </head>
+     <body>
+       <div id="app">
+         <div class="loading">Loading...</div>
+       </div>
+
+       <!-- Blazor framework -->
+       <script src="_framework/blazor.webassembly.js"></script>
+     </body>
+   </html>
+   ```
+
+   **Important:** NO custom JavaScript! Tauri API is available via C# IJSRuntime.
+
+3. Create `frontend/Imports.razor` for global using directives:
+
+   ```razor
+   @using System.Net.Http
+   @using System.Net.Http.Json
+   @using Microsoft.AspNetCore.Components.Forms
+   @using Microsoft.AspNetCore.Components.Routing
+   @using Microsoft.AspNetCore.Components.Web
+   @using Microsoft.AspNetCore.Components.Web.Virtualization
+   @using Microsoft.AspNetCore.Components.WebAssembly.Http
+   @using Microsoft.JSInterop
+   @using OpenCodeBlazor
+   @using OpenCodeBlazor.Services
+   @using Radzen
+   @using Radzen.Blazor
+   ```
+
+**Technical Details:**
+
+- Radzen provides DialogService, NotificationService, etc. via DI
+- `IJSRuntime` is Blazor's built-in JavaScript interop mechanism
+- NO custom JavaScript files (all Tauri IPC via C# wrappers)
+
+---
+
+### Step 3: Create Server Service Layer
+
+**Goal:** Create C# service that wraps Tauri commands using IJSRuntime
+
+**Tasks:**
+
+1. Create `frontend/Models/ServerInfo.cs` (matches Rust struct):
+
+   ```csharp
+   namespace OpenCodeBlazor.Models;
+
+   public record ServerInfo(
+       uint Pid,
+       string Host,
+       ushort Port
+   );
+   ```
+
+2. Create `frontend/Services/IServerService.cs`:
+
+   ```csharp
+   namespace OpenCodeBlazor.Services;
+
+   using OpenCodeBlazor.Models;
+
+   public interface IServerService
+   {
+       /// <summary>
+       /// Discovers a running OpenCode server on localhost.
+       /// </summary>
+       Task<ServerInfo?> DiscoverServerAsync();
+
+       /// <summary>
+       /// Spawns a new OpenCode server and waits for health check.
+       /// </summary>
+       Task<ServerInfo> SpawnServerAsync();
+
+       /// <summary>
+       /// Checks if the currently connected server is healthy.
+       /// </summary>
+       Task<bool> CheckHealthAsync();
+
+       /// <summary>
+       /// Stops the currently connected server.
+       /// </summary>
+       Task StopServerAsync();
+   }
+   ```
+
+3. Create `frontend/Services/ServerService.cs`:
+
+   ```csharp
+   namespace OpenCodeBlazor.Services;
+
+   using Microsoft.JSInterop;
+   using OpenCodeBlazor.Models;
+   using System.Text.Json;
+
+   public class ServerService : IServerService
+   {
+       private readonly IJSRuntime _jsRuntime;
+
+       public ServerService(IJSRuntime jsRuntime)
+       {
+           _jsRuntime = jsRuntime;
+       }
+
+       public async Task<ServerInfo?> DiscoverServerAsync()
+       {
+           // Call Tauri command via IJSRuntime
+           // Pattern: await _jsRuntime.InvokeAsync<T>("__TAURI__.invoke", "command_name")
+           var result = await _jsRuntime.InvokeAsync<JsonElement>(
+               "eval",
+               "window.__TAURI__.invoke('discover_server')"
+           );
+
+           // Parse result (may be null if no server found)
+           if (result.ValueKind == JsonValueKind.Null)
+               return null;
+
+           return JsonSerializer.Deserialize<ServerInfo>(result.GetRawText());
+       }
+
+       public async Task<ServerInfo> SpawnServerAsync()
+       {
+           // Similar pattern for spawn_server
+           var result = await _jsRuntime.InvokeAsync<JsonElement>(
+               "eval",
+               "window.__TAURI__.invoke('spawn_server')"
+           );
+
+           return JsonSerializer.Deserialize<ServerInfo>(result.GetRawText())
+               ?? throw new InvalidOperationException("Failed to spawn server");
+       }
+
+       public async Task<bool> CheckHealthAsync()
+       {
+           // Similar pattern for check_health
+           return await _jsRuntime.InvokeAsync<bool>(
+               "eval",
+               "window.__TAURI__.invoke('check_health')"
+           );
+       }
+
+       public async Task StopServerAsync()
+       {
+           // Similar pattern for stop_server
+           await _jsRuntime.InvokeAsync<object>(
+               "eval",
+               "window.__TAURI__.invoke('stop_server')"
+           );
+       }
+   }
+   ```
+
+   **Note:** This uses `eval` as a workaround. We may need a better approach (see Technical Details).
+
+**Technical Details:**
+
+- **Challenge:** Tauri API is at `window.__TAURI__.invoke()`, but IJSRuntime needs a function name
+- **Options:**
+  1. Use `eval` (works but not ideal)
+  2. Create a tiny JS wrapper file (violates zero-custom-JS policy slightly)
+  3. Use Tauri events instead of commands (more complex)
+- **Recommended:** Start with `eval`, verify it works, then refactor if needed
+- All Tauri commands return `Promise<T>`, which maps to C# `Task<T>`
+- Error handling: Tauri errors reject the Promise, which throws in C#
+
+---
+
+### Step 4: Build Basic Server Status UI
+
+**Goal:** Create a simple UI to test server discovery/spawn from Blazor
+
+**Tasks:**
+
+1. Create `frontend/Pages/Home.razor`:
+
+   ```razor
+   @page "/"
+   @inject IServerService ServerService
+   @inject NotificationService NotificationService
+
+   <PageTitle>OpenCode - Home</PageTitle>
+
+   <RadzenCard>
+       <RadzenStack Gap="1rem">
+           <RadzenText TextStyle="TextStyle.H3">Server Status</RadzenText>
+
+           @if (serverInfo != null)
+           {
+               <RadzenAlert AlertStyle="AlertStyle.Success">
+                   <RadzenText>
+                       Server running: PID @serverInfo.Pid on @serverInfo.Host:@serverInfo.Port
+                   </RadzenText>
+               </RadzenAlert>
+           }
+           else
+           {
+               <RadzenAlert AlertStyle="AlertStyle.Warning">
+                   No server connected
+               </RadzenAlert>
+           }
+
+           <RadzenStack Orientation="Orientation.Horizontal" Gap="0.5rem">
+               <RadzenButton Text="Discover Server"
+                             Click="OnDiscoverAsync"
+                             IsBusy="isLoading" />
+
+               <RadzenButton Text="Spawn Server"
+                             Click="OnSpawnAsync"
+                             IsBusy="isLoading"
+                             Variant="Variant.Filled" />
+
+               <RadzenButton Text="Check Health"
+                             Click="OnCheckHealthAsync"
+                             IsBusy="isLoading"
+                             Disabled="@(serverInfo == null)" />
+
+               <RadzenButton Text="Stop Server"
+                             Click="OnStopAsync"
+                             IsBusy="isLoading"
+                             ButtonStyle="ButtonStyle.Danger"
+                             Disabled="@(serverInfo == null)" />
+           </RadzenStack>
+       </RadzenStack>
+   </RadzenCard>
+
+   @code {
+       private ServerInfo? serverInfo;
+       private bool isLoading;
+
+       protected override async Task OnInitializedAsync()
+       {
+           // Try to discover server on startup
+           await OnDiscoverAsync();
+       }
+
+       private async Task OnDiscoverAsync()
+       {
+           isLoading = true;
+           try
+           {
+               serverInfo = await ServerService.DiscoverServerAsync();
+
+               if (serverInfo != null)
+                   NotificationService.Notify(NotificationSeverity.Success, "Server discovered");
+               else
+                   NotificationService.Notify(NotificationSeverity.Info, "No server found");
+           }
+           catch (Exception ex)
+           {
+               NotificationService.Notify(NotificationSeverity.Error, "Discovery failed", ex.Message);
+           }
+           finally
+           {
+               isLoading = false;
+           }
+       }
+
+       private async Task OnSpawnAsync()
+       {
+           isLoading = true;
+           try
+           {
+               serverInfo = await ServerService.SpawnServerAsync();
+               NotificationService.Notify(NotificationSeverity.Success, "Server spawned");
+           }
+           catch (Exception ex)
+           {
+               NotificationService.Notify(NotificationSeverity.Error, "Spawn failed", ex.Message);
+           }
+           finally
+           {
+               isLoading = false;
+           }
+       }
+
+       private async Task OnCheckHealthAsync()
+       {
+           isLoading = true;
+           try
+           {
+               var healthy = await ServerService.CheckHealthAsync();
+               var severity = healthy ? NotificationSeverity.Success : NotificationSeverity.Warning;
+               NotificationService.Notify(severity, healthy ? "Server healthy" : "Server unhealthy");
+           }
+           catch (Exception ex)
+           {
+               NotificationService.Notify(NotificationSeverity.Error, "Health check failed", ex.Message);
+           }
+           finally
+           {
+               isLoading = false;
+           }
+       }
+
+       private async Task OnStopAsync()
+       {
+           isLoading = true;
+           try
+           {
+               await ServerService.StopServerAsync();
+               serverInfo = null;
+               NotificationService.Notify(NotificationSeverity.Success, "Server stopped");
+           }
+           catch (Exception ex)
+           {
+               NotificationService.Notify(NotificationSeverity.Error, "Stop failed", ex.Message);
+           }
+           finally
+           {
+               isLoading = false;
+           }
+       }
+   }
+   ```
+
+2. Update `frontend/App.razor` to include Radzen components:
+
+   ```razor
+   <RadzenDialog />
+   <RadzenNotification />
+   <RadzenContextMenu />
+   <RadzenTooltip />
+
+   <Router AppAssembly="@typeof(App).Assembly">
+       <Found Context="routeData">
+           <RouteView RouteData="@routeData" DefaultLayout="@typeof(MainLayout)" />
+           <FocusOnNavigate RouteData="@routeData" Selector="h1" />
+       </Found>
+       <NotFound>
+           <PageTitle>Not found</PageTitle>
+           <LayoutView Layout="@typeof(MainLayout)">
+               <p role="alert">Sorry, there's nothing at this address.</p>
+           </LayoutView>
+       </NotFound>
+   </Router>
+   ```
+
+3. Test the full flow:
+
+   ```bash
+   # Build and publish Blazor
+   cd clients/tauri-blazor/apps/desktop/opencode/frontend
+   dotnet publish -c Release
+
+   # Run Tauri app
+   cd ..
+   cargo tauri dev
+   ```
+
+4. Verify functionality:
+   - App launches with Blazor UI ✅
+   - "Discover Server" button works
+   - "Spawn Server" button spawns server and updates UI
+   - "Check Health" button returns correct status
+   - "Stop Server" button stops server and clears UI
+   - Radzen notifications show success/error messages
+
+**Technical Details:**
+
+- Radzen components provide Material Design styling out of the box
+- `NotificationService` shows toast notifications (no custom JS needed)
+- `IsBusy` prop on buttons shows loading spinner automatically
+- All state management in component (`serverInfo`, `isLoading`)
+
+---
+
+## Success Criteria for Session 3
+
+- [ ] Blazor WASM project created in `frontend/` directory
+- [ ] `dotnet build` succeeds
+- [ ] `dotnet publish` outputs to `wwwroot/`
+- [ ] Tauri app loads Blazor UI successfully
+- [ ] `IServerService` and `ServerService` implemented
+- [ ] Home.razor displays server status
+- [ ] "Discover Server" button calls Tauri command via C#
+- [ ] "Spawn Server" button spawns server and updates UI
+- [ ] "Check Health" button works correctly
+- [ ] "Stop Server" button stops server and clears state
+- [ ] Radzen notifications show success/error messages
+- [ ] NO custom JavaScript files created (all IPC via C# IJSRuntime)
 
 ---
 
@@ -335,67 +525,92 @@ pub async fn example_command(
 
 **Existing (Read these first):**
 
-- `clients/tauri-blazor/backend/client-core/src/lib.rs` - Public API to wire up
-- `clients/tauri-blazor/backend/client-core/src/discovery/mod.rs` - Discovery functions
-- `clients/tauri-blazor/backend/client-core/src/spawn/mod.rs` - Spawn functions
-- `clients/tauri-blazor/backend/client-core/src/error.rs` - Error types to convert
-- `clients/tauri-blazor/common/src/lib.rs` - ErrorLocation trait
-- `clients/tauri-blazor/Cargo.toml` - Workspace structure
-- `clients/tauri-blazor/README.md` - Project structure
+- `apps/desktop/opencode/src/commands/server.rs` - Tauri commands to call
+- `apps/desktop/opencode/src/state.rs` - State management (for understanding)
+- `models/src/server_info.rs` - Rust ServerInfo struct (match in C#)
+- `apps/desktop/opencode/tauri.conf.json` - Tauri config (update frontendDist)
 
 **To Create:**
 
-- `clients/tauri-blazor/apps/desktop/opencode/Cargo.toml` - Tauri package
-- `clients/tauri-blazor/apps/desktop/opencode/tauri.conf.json` - Tauri config
-- `clients/tauri-blazor/apps/desktop/opencode/build.rs` - Build script
-- `clients/tauri-blazor/apps/desktop/opencode/src/main.rs` - Entry point
-- `clients/tauri-blazor/apps/desktop/opencode/src/state.rs` - State management
-- `clients/tauri-blazor/apps/desktop/opencode/src/commands/mod.rs` - Commands module
-- `clients/tauri-blazor/apps/desktop/opencode/src/commands/server.rs` - Server commands
-- `clients/tauri-blazor/apps/desktop/opencode/frontend/index.html` - Test HTML
+- `frontend/OpenCodeBlazor.csproj` - .NET project file
+- `frontend/Program.cs` - DI configuration
+- `frontend/wwwroot/index.html` - Entry HTML (Blazor + Radzen CSS)
+- `frontend/Models/ServerInfo.cs` - C# model matching Rust
+- `frontend/Services/IServerService.cs` - Service interface
+- `frontend/Services/ServerService.cs` - Service implementation (IJSRuntime)
+- `frontend/Pages/Home.razor` - Server status UI
+- `frontend/App.razor` - Root component with Radzen services
+- `frontend/Imports.razor` - Global using directives
 
-**Reference (for Tauri patterns):**
+**Reference (for patterns):**
 
-- Look at other Tauri projects in repo if any exist
-- Tauri 2 docs for command patterns
-- Cognexus example (same Tauri version)
+- Cognexus Blazor example (if available)
+- Radzen documentation for component usage
+- Blazor IJSRuntime documentation for Tauri interop
 
 ---
 
 ## Important Reminders
 
-1. **Production-grade only** - Match the quality of `client-core`
-2. **Tauri 2.x** - NOT Tauri 1.x (different API)
-3. **Zero custom JavaScript** - Test HTML only uses `window.__TAURI__.invoke()`
-4. **Error handling** - Convert CoreError properly, include location info
-5. **State management** - Use Arc<Mutex<T>> for thread safety
-6. **Clippy clean** - Must pass `-D warnings`
-7. **Full rustdoc** - Document all public APIs
-8. **Test as you go** - Verify each command works before moving on
+1. **Zero custom JavaScript** - All Tauri IPC via C# IJSRuntime only
+2. **.NET 9.0** - Use latest stable .NET version
+3. **Radzen components** - Use for all UI (buttons, cards, notifications)
+4. **Error handling** - Show user-friendly error messages via Radzen notifications
+5. **Loading states** - Use `IsBusy` prop on buttons for better UX
+6. **Publish to wwwroot/** - Tauri expects static files in `frontendDist` path
+7. **Test as you go** - Verify each command works before moving on
+8. **Documentation** - XML doc comments on all public APIs
 
 ---
 
 ## Technical Constraints
 
-- **Tauri Version:** 2.9.5+ (match Cognexus)
-- **.NET Target (future):** 9.0+ for Blazor WASM
-- **Zero Custom JavaScript:** All IPC via C# IJSRuntime only (Blazor in Session 3)
-- **Protocol:** Use `protocol-asset` for serving static files
-- **Window:** Minimum 800×600, resizable, proper title
+- **.NET Version:** 9.0+
+- **Blazor Mode:** WebAssembly (NOT Server)
+- **Zero Custom JavaScript:** All Tauri IPC via C# IJSRuntime
+- **UI Framework:** Radzen Blazor Components only
+- **Markdown:** Markdig (for Session 4, add dependency now)
+- **CSP:** null (required for Blazor WASM, already configured in tauri.conf.json)
 
 ---
 
 ## Estimated Token Budget
 
-**~100K tokens:**
+**~120K tokens:**
 
-- Reading context: ~15K tokens (existing code + docs)
-- Tauri scaffold: ~20K tokens
-- State management: ~10K tokens
-- Command implementation: ~30K tokens
+- Reading context: ~15K tokens (Tauri backend + docs)
+- Blazor project setup: ~15K tokens
+- Dependency configuration: ~10K tokens
+- Service layer implementation: ~25K tokens
+- UI components: ~30K tokens
 - Testing/verification: ~15K tokens
 - Documentation: ~10K tokens
 
 ---
 
-**Start with:** "Let me read the existing client-core API to understand what we're wiring up, then scaffold the Tauri project structure."
+## Known Challenges & Solutions
+
+**Challenge 1:** IJSRuntime can't directly call `window.__TAURI__.invoke()`
+
+**Solution:** Use `eval` wrapper initially, refactor later if needed:
+
+```csharp
+await _jsRuntime.InvokeAsync<T>("eval", "window.__TAURI__.invoke('command_name')")
+```
+
+**Challenge 2:** JSON deserialization from Tauri commands
+
+**Solution:** Use `JsonElement` intermediate type, then deserialize:
+
+```csharp
+var json = await _jsRuntime.InvokeAsync<JsonElement>(...);
+return JsonSerializer.Deserialize<ServerInfo>(json.GetRawText());
+```
+
+**Challenge 3:** Blazor publish output not updating in Tauri
+
+**Solution:** Configure `PublishDir` in csproj, or use build script to copy files
+
+---
+
+**Start with:** "Let me read the Tauri commands to understand the API, then initialize the Blazor WASM project with proper dependencies."
