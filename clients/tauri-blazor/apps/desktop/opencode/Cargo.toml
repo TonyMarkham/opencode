@@ -3,6 +3,14 @@ name = "opencode"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "opencode"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opencode"
+path = "src/main.rs"
+
 [dependencies]
 thiserror = { workspace = true }
 tauri = { workspace = true }
@@ -16,6 +24,10 @@ humantime = { workspace = true }
 # Workspace dependencies
 client-core = { workspace = true }
 models = { workspace = true }
+
+[[test]]
+name = "integration_tests"
+path = "integration_tests/mod.rs"
 
 [build-dependencies]
 tauri-build = { workspace = true }

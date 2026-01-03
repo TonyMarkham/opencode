@@ -1,14 +1,10 @@
 // Prevents additional console window on Windows in release builds
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod commands;
-mod error;
-mod logger;
-mod state;
-
-use crate::error::OpencodeError;
-use crate::logger::initialize as LoggerInitialize;
-use crate::state::AppState;
+use opencode::commands;
+use opencode::error::OpencodeError;
+use opencode::logger::initialize as LoggerInitialize;
+use opencode::state::AppState;
 
 use models::ErrorLocation;
 
