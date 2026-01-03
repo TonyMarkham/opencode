@@ -45,7 +45,7 @@ Build the Blazor WebAssembly frontend that calls Tauri commands via C# IJSRuntim
    ```xml
    <Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
      <PropertyGroup>
-       <TargetFramework>net9.0</TargetFramework>
+       <TargetFramework>net10.0</TargetFramework>
        <Nullable>enable</Nullable>
        <ImplicitUsings>enable</ImplicitUsings>
      </PropertyGroup>
@@ -58,8 +58,8 @@ Build the Blazor WebAssembly frontend that calls Tauri commands via C# IJSRuntim
        <PackageReference Include="Markdig" Version="0.38.0" />
 
        <!-- Blazor WASM -->
-       <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="9.0.0" />
-       <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="9.0.0" PrivateAssets="all" />
+       <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.0" />
+       <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.0" PrivateAssets="all" />
      </ItemGroup>
    </Project>
    ```
@@ -565,7 +565,7 @@ Build the Blazor WebAssembly frontend that calls Tauri commands via C# IJSRuntim
 
 ## Technical Constraints
 
-- **.NET Version:** 9.0+
+- **.NET Version:** 10.0+
 - **Blazor Mode:** WebAssembly (NOT Server)
 - **Zero Custom JavaScript:** All Tauri IPC via C# IJSRuntime
 - **UI Framework:** Radzen Blazor Components only
